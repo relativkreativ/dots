@@ -42,6 +42,9 @@ cd dots
 
 It installs a self-contained copy to `~/.local/bin/dots` and never changes
 `PATH` or shell startup files. Add `~/.local/bin` to `PATH` yourself if needed.
-Use `./install.sh --bin-dir "$HOME/bin"` for another location. The matching
-`./uninstall.sh [--bin-dir <path>]` removes only that exact executable and
-leaves its containing directory untouched.
+Use `./install.sh --bin-dir "$HOME/bin"` for another location.
+
+## Uninstallation
+
+The matching `./uninstall.sh [--bin-dir <path>]` removes only that exact
+executable and leaves its containing directory untouched.
