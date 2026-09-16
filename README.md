@@ -29,3 +29,19 @@ tables, multiline values, and other TOML features are rejected. Metadata
 `remove` only deletes a target that currently exactly matches its expected
 deployment. Colors are enabled only for a terminal and are disabled by
 `NO_COLOR`.
+
+## Installation
+
+Clone this application repository and run its installer:
+
+```bash
+git clone <dots-repository>
+cd dots
+./install.sh
+```
+
+It installs a self-contained copy to `~/.local/bin/dots` and never changes
+`PATH` or shell startup files. Add `~/.local/bin` to `PATH` yourself if needed.
+Use `./install.sh --bin-dir "$HOME/bin"` for another location. The matching
+`./uninstall.sh [--bin-dir <path>]` removes only that exact executable and
+leaves its containing directory untouched.

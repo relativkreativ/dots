@@ -81,4 +81,36 @@ SPACE="$DISC/repo with spaces"; mkdir -p "$SPACE"; printf '[defaults]\nstrategy 
 (cd "$DISC/neutral"; HOME=$DISC/home DOTS_HOME=$DISC/home "$DOTS" status --repo "$SPACE/." > "$TMP/out")
 ok grep -q "dots  $SPACE" "$TMP/out"; ok grep -q file "$TMP/out"; done_case
 
+# Installation tests use an entirely separate HOME and never touch user files.
+IH="$TMP/install home"; mkdir -p "$IH"; printf 'unchanged bashrc\n' > "$IH/.bashrc"; printf 'unchanged profile\n' > "$IH/.profile"
+HOME="$IH" PATH=/usr/bin "$ROOT/install.sh" > "$TMP/out" 2> "$TMP/err"
+ok test -x "$IH/.local/bin/dots"; ok test ! -L "$IH/.local/bin/dots"; ok "$IH/.local/bin/dots" --version >/dev/null; ok grep -q 'not in PATH' "$TMP/err"; ok grep -q 'unchanged bashrc' "$IH/.bashrc"; ok grep -q 'unchanged profile' "$IH/.profile"; done_case
+
+printf '#!/usr/bin/env bash\necho old\n' > "$IH/.local/bin/dots"; chmod 755 "$IH/.local/bin/dots"
+HOME="$IH" PATH="$IH/.local/bin:/usr/bin" "$ROOT/install.sh" > "$TMP/out" 2> "$TMP/err"
+ok grep -q Updating "$TMP/out"; ok test ! -s "$TMP/err"; ok "$IH/.local/bin/dots" --version >/dev/null; done_case
+
+CUSTOM="$TMP/custom bin with spaces"; HOME="$IH" PATH=/usr/bin "$ROOT/install.sh" --bin-dir "$CUSTOM" > "$TMP/out" 2> "$TMP/err"
+ok test -x "$CUSTOM/dots"; ok "$CUSTOM/dots" --version >/dev/null; ok grep -q 'not in PATH' "$TMP/err"; done_case
+
+HOME="$IH" PATH=/usr/bin "$ROOT/uninstall.sh" > "$TMP/out" 2> "$TMP/err"
+ok test ! -e "$IH/.local/bin/dots"; ok test -d "$IH/.local/bin"; ok grep -q Removed "$TMP/out"; done_case
+
+HOME="$IH" PATH=/usr/bin "$ROOT/uninstall.sh" --bin-dir "$CUSTOM" > "$TMP/out"
+ok test ! -e "$CUSTOM/dots"; ok test -d "$CUSTOM"; done_case
+
+HOME="$IH" PATH=/usr/bin "$ROOT/uninstall.sh" --bin-dir "$CUSTOM" > "$TMP/out"
+ok grep -q 'not installed' "$TMP/out"; done_case
+
+mkdir "$CUSTOM/dots"
+if HOME="$IH" PATH=/usr/bin "$ROOT/uninstall.sh" --bin-dir "$CUSTOM" > "$TMP/out" 2>&1; then exit 1; fi
+ok grep -q 'refusing to remove directory' "$TMP/out"; rmdir "$CUSTOM/dots"; done_case
+
+HOME="$IH" PATH=/usr/bin NO_COLOR=1 "$ROOT/install.sh" --bin-dir "$CUSTOM" > "$TMP/out" 2> "$TMP/err"
+if grep -q $'\033' "$TMP/out" "$TMP/err"; then exit 1; fi; done_case
+
+HOME="$IH" PATH=/usr/bin "$ROOT/install.sh" --bin-dir "$CUSTOM" > "$TMP/out" 2> "$TMP/err"
+if grep -q $'\033' "$TMP/out" "$TMP/err"; then exit 1; fi
+ok grep -q 'unchanged bashrc' "$IH/.bashrc"; ok grep -q 'unchanged profile' "$IH/.profile"; done_case
+
 printf 'ok: %s isolated test cases\n' "$pass"
