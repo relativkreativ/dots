@@ -17,16 +17,20 @@ mark() { local color=$1 symbol=$2; printf '%s%s%s' "$color" "$symbol" "$C_RESET"
 
 usage() {
   cat <<'EOF'
-Usage: dots [--help] [--version] <command>
+Usage: dots [--repo <path>] [--help] [--version] <command>
 
 Commands:
   status          Show the derived deployment state (read-only).
   apply [--force] Create missing deployments; --force replaces conflicts.
   remove <path>   Remove a deployment only when it still matches its source.
 
-Repository discovery: set DOTS_REPO to the repository root, or run from a
-directory below a repository containing dots.toml. DOTS_HOME overrides HOME,
-primarily for testing.
+Options:
+  --repo <path>   Use a specific dotfiles repository.
+
+Repository discovery, in order: --repo; the current directory when it contains
+dots.toml; DOTS_REPO; then ~/.dotfiles. DOTS_REPO supplies the default
+repository location and does not override a dots.toml in the current directory.
+DOTS_HOME overrides HOME only as a deployment target, primarily for testing.
 EOF
 }
 
@@ -35,20 +39,36 @@ valid_relpath() {
   [[ -n $p && $p != /* && $p != */ && $p != *'//' && $p != . && $p != .. && $p != ../* && $p != */../* && $p != */.. && $p != *$'\n'* ]]
 }
 
-find_repo() {
-  local d
-  if [[ -n ${DOTS_REPO:-} ]]; then
-    [[ -d $DOTS_REPO && -f $DOTS_REPO/dots.toml ]] || die "DOTS_REPO must name a directory containing dots.toml"
-    REPO=$(cd "$DOTS_REPO" && pwd -P)
-    return
+expand_repo_path() {
+  case $1 in
+    '~') printf '%s' "${HOME:?HOME is not set}" ;;
+    '~/'*) printf '%s/%s' "${HOME:?HOME is not set}" "${1:2}" ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+
+select_repo() {
+  local candidate=$1 shown
+  candidate=$(expand_repo_path "$candidate")
+  if [[ ! -d $candidate || ! -f $candidate/dots.toml ]]; then
+    die "$candidate is not a dots repository (dots.toml not found)"
   fi
-  d=$(pwd -P)
-  while :; do
-    if [[ -f $d/dots.toml ]]; then REPO=$d; return; fi
-    [[ $d == / ]] && break
-    d=${d%/*}; [[ -n $d ]] || d=/
-  done
-  die "repository not found; set DOTS_REPO or run below a directory containing dots.toml"
+  REPO=$(cd "$candidate" && pwd -P)
+}
+
+find_repo() {
+  local cwd
+  if [[ -n ${REPO_OPTION:-} ]]; then select_repo "$REPO_OPTION"; return; fi
+  cwd=$(pwd -P)
+  if [[ -f $cwd/dots.toml ]]; then select_repo "$cwd"; return; fi
+  if [[ -n ${DOTS_REPO:-} ]]; then select_repo "$DOTS_REPO"; return; fi
+  select_repo "${HOME:?HOME is not set}/.dotfiles"
+}
+
+display_repo() {
+  if [[ $REPO == "${HOME%/}" ]]; then printf '~';
+  elif [[ $REPO == "${HOME%/}/"* ]]; then printf '~/%s' "${REPO#"${HOME%/}/"}";
+  else printf '%s' "$REPO"; fi
 }
 
 trim() { local x=$1; x=${x#"${x%%[![:space:]]*}"}; x=${x%"${x##*[![:space:]]}"}; printf '%s' "$x"; }
@@ -195,7 +215,7 @@ apply_one() {
   case $st in symlink) ln -s "$src" "$dst";; hardlink) ln "$src" "$dst" || die "cannot hardlink '${ESOURCE[i]}' (possibly different filesystems)";; copy) if [[ ${ETYPE[i]} == dir ]]; then cp -R "$src" "$dst"; else cp "$src" "$dst"; fi;; esac
 }
 render_status() {
-  local i; for i in "${!ESOURCE[@]}"; do inspect_entry "$i"; case $INSPECT in correct) printf '%s  %s\n' "$(mark "$C_OK" '✓')" "${ETARGET[i]}";; missing) printf '%s  %s  %s\n' "$(mark "$C_ADD" '→')" "${ETARGET[i]}" "${C_DIM}missing${C_RESET}";; differs) printf '%s  %s  %s\n' "$(mark "$C_WARN" '●')" "${ETARGET[i]}" "${C_WARN}differs${C_RESET}";; conflict) printf '%s  %s  %s\n' "$(mark "$C_ERR" '!')" "${ETARGET[i]}" "${C_ERR}conflict${C_RESET}";; esac; done
+  local i; printf '%sdots  %s%s\n\n' "$C_DIM" "$(display_repo)" "$C_RESET"; for i in "${!ESOURCE[@]}"; do inspect_entry "$i"; case $INSPECT in correct) printf '%s  %s\n' "$(mark "$C_OK" '✓')" "${ETARGET[i]}";; missing) printf '%s  %s  %s\n' "$(mark "$C_ADD" '→')" "${ETARGET[i]}" "${C_DIM}missing${C_RESET}";; differs) printf '%s  %s  %s\n' "$(mark "$C_WARN" '●')" "${ETARGET[i]}" "${C_WARN}differs${C_RESET}";; conflict) printf '%s  %s  %s\n' "$(mark "$C_ERR" '!')" "${ETARGET[i]}" "${C_ERR}conflict${C_RESET}";; esac; done
 }
 cmd_apply() {
   local force=$1 i created=0 unchanged=0 conflicts=0; printf '%s\n\n' "${C_BOLD}dots apply${C_RESET}"
@@ -215,8 +235,17 @@ cmd_remove() {
 }
 dots_main() {
   init_ui
-  case ${1:-} in --help|-h) usage; return;; --version) printf 'dots %s\n' "$DOTS_VERSION"; return;; esac
-  local command=${1:-}; shift || true
+  local command= arg repo_seen=0 args=()
+  while [[ $# -gt 0 ]]; do
+    case $1 in
+      --help|-h) usage; return ;;
+      --version) printf 'dots %s\n' "$DOTS_VERSION"; return ;;
+      --repo) [[ $# -ge 2 ]] || die '--repo requires a path'; (( repo_seen == 0 )) || die '--repo may only be specified once'; REPO_OPTION=$2; repo_seen=1; shift 2 ;;
+      *) args+=("$1"); shift ;;
+    esac
+  done
+  [[ ${#args[@]} -gt 0 ]] || { usage >&2; exit 2; }
+  command=${args[0]}; set -- "${args[@]:1}"
   case $command in status|apply|remove) ;; *) usage >&2; exit 2;; esac
   find_repo; TARGET_HOME=${DOTS_HOME:-${HOME:?HOME is not set}}; [[ -d $TARGET_HOME ]] || die "home directory does not exist: $TARGET_HOME"; TARGET_HOME=$(cd "$TARGET_HOME" && pwd -P)
   parse_manifest; build_desired

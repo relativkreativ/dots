@@ -6,13 +6,17 @@ exceptions, such as atomic directories, copies, hardlinks, target remapping,
 and OS/host conditions.
 
 ```bash
-DOTS_REPO=$PWD bin/dots status
-DOTS_REPO=$PWD bin/dots apply
-DOTS_REPO=$PWD bin/dots remove .config/nvim
+bin/dots --repo ~/some-dotfiles status
+bin/dots --repo ~/some-dotfiles apply
+bin/dots --repo ~/some-dotfiles remove .config/nvim
 ```
 
-Discovery uses `DOTS_REPO`, or walks upward from the current directory until it
-finds `dots.toml`. It stores no state. `DOTS_HOME` overrides `$HOME` for tests.
+Repository discovery is deliberately direct and stateless: `--repo <path>`;
+the current directory if it directly contains `dots.toml`; `$DOTS_REPO`; then
+`~/.dotfiles`. It never walks upward. The canonical form is `dots --repo <path>
+<command>`; `~` and `~/…` supplied as a quoted option value refer to the current
+user's home directory. Every selected directory must contain `dots.toml`.
+`DOTS_HOME` overrides `$HOME` only as a deployment target for tests.
 
 The manifest is deliberately a small TOML subset: `[defaults]` and
 `["path"]` tables; simple quoted strings; and arrays of simple quoted strings.

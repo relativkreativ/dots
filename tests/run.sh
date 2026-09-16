@@ -9,7 +9,7 @@ trap 'rm -rf "$TMP"' EXIT
 pass=0
 
 new_case() { R=$TMP/repo-$1; H=$TMP/home-$1; mkdir -p "$R" "$H"; printf '[defaults]\nstrategy = "symlink"\n' > "$R/dots.toml"; }
-run() { DOTS_REPO=$R DOTS_HOME=$H "$DOTS" "$@"; }
+run() { (cd "$TMP"; DOTS_REPO=$R DOTS_HOME=$H "$DOTS" "$@"); }
 ok() { "$@" || { printf 'FAIL: %s\n' "$*" >&2; exit 1; }; }
 same_inode() { [[ $(stat -c '%d:%i' "$1" 2>/dev/null || stat -f '%d:%i' "$1") == $(stat -c '%d:%i' "$2" 2>/dev/null || stat -f '%d:%i' "$2") ]]; }
 done_case() { pass=$((pass + 1)); }
@@ -47,5 +47,38 @@ new_case overlap; mkdir -p "$R/tree"; printf x > "$R/tree/file"; printf '\n["tre
 new_case remove; printf x > "$R/file"; run apply >/dev/null; run remove file >/dev/null; ok test ! -e "$H/file"; printf user > "$H/file"; if run remove file >/dev/null 2>&1; then exit 1; fi; done_case
 
 new_case ui; printf x > "$R/file"; NO_COLOR=1 run status > "$TMP/out"; ok test ! -s <(grep $'\033' "$TMP/out" || true); done_case
+
+# Discovery is tested from a neutral working directory so it cannot accidentally
+# select this application's own repository.
+DISC=$TMP/discovery; mkdir -p "$DISC/neutral" "$DISC/home" "$DISC/current" "$DISC/env" "$DISC/explicit" "$DISC/without-manifest"
+printf '[defaults]\nstrategy = "symlink"\n' > "$DISC/current/dots.toml"; printf current > "$DISC/current/current-file"
+printf '[defaults]\nstrategy = "symlink"\n' > "$DISC/env/dots.toml"; printf env > "$DISC/env/env-file"
+printf '[defaults]\nstrategy = "symlink"\n' > "$DISC/explicit/dots.toml"; printf explicit > "$DISC/explicit/explicit-file"
+mkdir -p "$DISC/home/.dotfiles"; printf '[defaults]\nstrategy = "symlink"\n' > "$DISC/home/.dotfiles/dots.toml"; printf fallback > "$DISC/home/.dotfiles/fallback-file"
+
+(cd "$DISC/current"; HOME=$DISC/home DOTS_HOME=$DISC/home DOTS_REPO=$DISC/env "$DOTS" --repo "$DISC/explicit/." status > "$TMP/out")
+ok grep -q "dots  $DISC/explicit" "$TMP/out"; ok grep -q explicit-file "$TMP/out"; ok test ! -e "$DISC/home/current-file"; done_case
+
+(cd "$DISC/current"; HOME=$DISC/home DOTS_HOME=$DISC/home DOTS_REPO=$DISC/env "$DOTS" status > "$TMP/out")
+ok grep -q "dots  $DISC/current" "$TMP/out"; ok grep -q current-file "$TMP/out"; ok test ! -e "$DISC/home/env-file"; done_case
+
+(cd "$DISC/neutral"; HOME=$DISC/home DOTS_HOME=$DISC/home DOTS_REPO=$DISC/env "$DOTS" status > "$TMP/out")
+ok grep -q "dots  $DISC/env" "$TMP/out"; ok grep -q env-file "$TMP/out"; done_case
+
+(cd "$DISC/neutral"; HOME=$DISC/home DOTS_HOME=$DISC/home DOTS_REPO= "$DOTS" status > "$TMP/out")
+ok grep -q "dots  ~/.dotfiles" "$TMP/out"; ok grep -q fallback-file "$TMP/out"; done_case
+
+(cd "$DISC/neutral"; HOME=$DISC/home DOTS_HOME=$DISC/home DOTS_REPO= "$DOTS" --repo '~/.dotfiles' status > "$TMP/out")
+ok grep -q "dots  ~/.dotfiles" "$TMP/out"; done_case
+
+if (cd "$DISC/neutral"; HOME=$DISC/home DOTS_HOME=$DISC/home "$DOTS" --repo "$DISC/missing" status > "$TMP/out" 2>&1); then exit 1; fi
+ok grep -q 'is not a dots repository (dots.toml not found)' "$TMP/out"; done_case
+
+if (cd "$DISC/neutral"; HOME=$DISC/home DOTS_HOME=$DISC/home "$DOTS" --repo "$DISC/without-manifest" status > "$TMP/out" 2>&1); then exit 1; fi
+ok grep -q "$DISC/without-manifest is not a dots repository" "$TMP/out"; done_case
+
+SPACE="$DISC/repo with spaces"; mkdir -p "$SPACE"; printf '[defaults]\nstrategy = "symlink"\n' > "$SPACE/dots.toml"; printf spaced > "$SPACE/file"
+(cd "$DISC/neutral"; HOME=$DISC/home DOTS_HOME=$DISC/home "$DOTS" status --repo "$SPACE/." > "$TMP/out")
+ok grep -q "dots  $SPACE" "$TMP/out"; ok grep -q file "$TMP/out"; done_case
 
 printf 'ok: %s isolated test cases\n' "$pass"
