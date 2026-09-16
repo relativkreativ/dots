@@ -1,0 +1,12 @@
+# dots deliberately supports a narrow TOML subset.
+#
+# Supported: [defaults], ["relative/path"], simple double-quoted strings,
+# and arrays of simple double-quoted strings. Comments begin with #.
+# Supported keys: defaults.strategy; target, strategy, os, hosts in entries.
+# Strings do not support escapes or embedded quotes. Paths must be non-empty,
+# relative, and contain no .. components. Explicit entries suppress implicit
+# scanning of their source path (and its descendants), including when disabled
+# by conditions.
+
+[defaults]
+strategy = "symlink"

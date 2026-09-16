@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# shellcheck shell=bash
+set -euo pipefail
+
+ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
+# shellcheck source=../lib/dots.sh
+source "$ROOT/lib/dots.sh"
+dots_main "$@"
