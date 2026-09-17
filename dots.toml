@@ -1,12 +1,29 @@
 # dots deliberately supports a narrow TOML subset.
 #
-# Supported: [defaults], ["relative/path"], simple double-quoted strings,
-# and arrays of simple double-quoted strings. Comments begin with #.
-# Supported keys: defaults.strategy; target, strategy, os, hosts in entries.
-# Strings do not support escapes or embedded quotes. Paths must be non-empty,
-# relative, and contain no .. components. Explicit entries suppress implicit
-# scanning of their source path (and its descendants), including when disabled
-# by conditions.
+# Supported: [defaults], [selectors], and ["relative/path"] tables; simple
+# double-quoted strings; and triple-quoted selector command blocks. Comments
+# begin with #. Supported keys: defaults.strategy; selector names mapped to
+# Bash commands; and target/strategy in entries. Strings do not support escapes
+# or embedded quotes. Paths must be non-empty, relative, and contain no ..
+# components. Explicit entries suppress implicit scanning of their source path
+# and its descendants.
 
 [defaults]
 strategy = "symlink"
+
+[selectors]
+os = """
+case "$(uname -s)" in
+  Linux)  echo linux ;;
+  Darwin) echo macos ;;
+esac
+"""
+
+distro = """
+if [[ -r /etc/os-release ]]; then
+  . /etc/os-release
+  echo "$ID"
+fi
+"""
+
+host = "hostname -s"

@@ -30,7 +30,31 @@ new_case hardlinkdir; mkdir -p "$R/tree"; printf '\n["tree"]\nstrategy = "hardli
 
 new_case target; mkdir -p "$R/shared"; printf source > "$R/shared/bashrc"; printf '\n["shared/bashrc"]\ntarget = ".bashrc"\n' >> "$R/dots.toml"; run apply >/dev/null; ok test -L "$H/.bashrc"; ok test ! -e "$H/shared/bashrc"; done_case
 
-new_case conditions; printf l > "$R/linux"; printf d > "$R/darwin"; host=$(hostname -s 2>/dev/null || hostname); printf h > "$R/host"; printf '\n["linux"]\nos = ["linux"]\n\n["darwin"]\nos = ["darwin"]\n\n["host"]\nhosts = ["%s"]\n' "$host" >> "$R/dots.toml"; run apply >/dev/null; ok test -L "$H/host"; if [[ $(uname -s | tr A-Z a-z) == linux ]]; then ok test -L "$H/linux"; ok test ! -e "$H/darwin"; else ok test -L "$H/darwin"; ok test ! -e "$H/linux"; fi; done_case
+new_case builtin; printf base > "$R/file"; if [[ $(uname -s) == Linux ]]; then mkdir -p "$R/.dots/os/linux"; printf linux > "$R/.dots/os/linux/file"; fi; run apply >/dev/null; ok test -L "$H/file"; if [[ $(uname -s) == Linux ]]; then ok test "$(readlink "$H/file")" = "$R/.dots/os/linux/file"; fi; ok grep -q '^os = """' "$ROOT/dots.toml"; ok grep -q 'Darwin) echo macos' "$ROOT/dots.toml"; done_case
+
+new_case overlay; printf base > "$R/.bashrc"; mkdir -p "$R/.dots/os/linux" "$R/.dots/distro/omarchy" "$R/.dots/host/ser8/.config/ghostty"; printf os > "$R/.dots/os/linux/.bashrc"; printf distro > "$R/.dots/distro/omarchy/.bashrc"; printf host > "$R/.dots/host/ser8/.bashrc"; printf overlay > "$R/.dots/host/ser8/.config/ghostty/config"; printf '\n[selectors]\nos = "printf LINUX"\ndistro = "printf OMARCHY"\nhost = "printf SER8"\n' >> "$R/dots.toml"; run apply >/dev/null; ok test "$(readlink "$H/.bashrc")" = "$R/.dots/host/ser8/.bashrc"; ok test "$(readlink "$H/.config/ghostty/config")" = "$R/.dots/host/ser8/.config/ghostty/config"; ok test ! -e "$H/.dots"; run apply > "$TMP/out"; ok grep -q '0 created' "$TMP/out"; done_case
+
+new_case sparse; mkdir -p "$R/.config" "$R/.dots/platform/laptop/.config"; printf base-a > "$R/.config/a"; printf base-b > "$R/.config/b"; printf over-a > "$R/.dots/platform/laptop/.config/a"; printf '\n[selectors]\nplatform = "printf LAPTOP"\n' >> "$R/dots.toml"; run apply >/dev/null; ok test "$(readlink "$H/.config/a")" = "$R/.dots/platform/laptop/.config/a"; ok test "$(readlink "$H/.config/b")" = "$R/.config/b"; done_case
+
+new_case atomicoverlay; mkdir -p "$R/.config/nvim" "$R/.dots/host/ser8/.config/nvim"; printf base > "$R/.config/nvim/init"; printf host > "$R/.dots/host/ser8/.config/nvim/init"; printf '\n[selectors]\nhost = "printf ser8"\n\n[".config/nvim"]\n' >> "$R/dots.toml"; run apply >/dev/null; ok test "$(readlink "$H/.config/nvim")" = "$R/.dots/host/ser8/.config/nvim"; done_case
+
+new_case copyoverlay; printf base > "$R/file"; mkdir -p "$R/.dots/role/workstation"; printf role > "$R/.dots/role/workstation/file"; printf '\n[selectors]\nrole = "printf WorkStation"\n\n["file"]\nstrategy = "copy"\n' >> "$R/dots.toml"; run apply >/dev/null; ok grep -q role "$H/file"; done_case
+
+new_case emptyselector; printf base > "$R/file"; mkdir -p "$R/.dots/role/workstation"; printf over > "$R/.dots/role/workstation/file"; printf '\n[selectors]\nrole = "true"\n' >> "$R/dots.toml"; run apply >/dev/null; ok test "$(readlink "$H/file")" = "$R/file"; done_case
+
+new_case normalized; mkdir -p "$R/.dots/os/macos" "$R/.dots/distro/fedora" "$R/.dots/host/ser8"; printf mac > "$R/.dots/os/macos/mac"; printf fedora > "$R/.dots/distro/fedora/distro"; printf host > "$R/.dots/host/ser8/host"; printf '\n[selectors]\nos = "printf MACOS"\ndistro = "printf FEDORA"\nhost = "printf SER8"\n' >> "$R/dots.toml"; run apply >/dev/null; ok test "$(readlink "$H/mac")" = "$R/.dots/os/macos/mac"; ok test "$(readlink "$H/distro")" = "$R/.dots/distro/fedora/distro"; ok test "$(readlink "$H/host")" = "$R/.dots/host/ser8/host"; done_case
+
+new_case distrofile; mkdir -p "$R/.dots/distro/alpine"; printf alpine > "$R/.dots/distro/alpine/file"; printf 'ID=ALPINE\n' > "$R/os-release"; printf '\n[selectors]\ndistro = """\n. "%s/os-release"\necho "$ID"\n"""\n' "$R" >> "$R/dots.toml"; run apply >/dev/null; ok test "$(readlink "$H/file")" = "$R/.dots/distro/alpine/file"; done_case
+
+new_case selectorerror; printf base > "$R/file"; printf '\n[selectors]\nrole = "false"\n' >> "$R/dots.toml"; if run apply > "$TMP/out" 2>&1; then exit 1; fi; ok test ! -e "$H/file"; done_case
+
+new_case selectorinvalid; printf base > "$R/file"; printf '\n[selectors]\nrole = "printf '\''Work Station'\''"\n' >> "$R/dots.toml"; if run status > "$TMP/out" 2>&1; then exit 1; fi; ok grep -q 'invalid value' "$TMP/out"; done_case
+
+new_case selectortraversal; printf base > "$R/file"; printf '\n[selectors]\nrole = "printf '\''../../outside'\''"\n' >> "$R/dots.toml"; if run status > "$TMP/out" 2>&1; then exit 1; fi; ok grep -q 'invalid value' "$TMP/out"; done_case
+
+new_case selectormultiline; printf base > "$R/file"; printf '\n[selectors]\nrole = "printf '\''one\\ntwo'\''"\n' >> "$R/dots.toml"; if run status > "$TMP/out" 2>&1; then exit 1; fi; ok grep -q 'multiple values' "$TMP/out"; done_case
+
+new_case typeconflict; mkdir -p "$R/.config" "$R/.dots/role/workstation"; printf base > "$R/.config/file"; printf over > "$R/.dots/role/workstation/.config"; printf '\n[selectors]\nrole = "printf workstation"\n' >> "$R/dots.toml"; if run status > "$TMP/out" 2>&1; then exit 1; fi; ok grep -q 'type conflict' "$TMP/out"; done_case
 
 new_case conflict; printf source > "$R/file"; printf user > "$H/file"; run apply > "$TMP/out" || true; ok grep -q conflict "$TMP/out"; ok grep -q user "$H/file"; done_case
 

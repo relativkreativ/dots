@@ -21,7 +21,7 @@ Usage: dots [--repo <path>] [--help] [--version] <command>
 
 Commands:
   status          Show the derived deployment state (read-only).
-  apply [--force] Create missing deployments; --force replaces conflicts.
+    apply [--force] Create missing deployments; --force replaces conflicts.
   remove <path>   Remove a deployment only when it still matches its source.
 
 Options:
@@ -38,6 +38,8 @@ valid_relpath() {
   local p=$1
   [[ -n $p && $p != /* && $p != */ && $p != *'//' && $p != . && $p != .. && $p != ../* && $p != */../* && $p != */.. && $p != *$'\n'* ]]
 }
+valid_selector_token() { [[ $1 =~ ^[a-z0-9._-]+$ ]]; }
+lowercase() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
 
 expand_repo_path() {
   case $1 in
@@ -98,32 +100,76 @@ parse_string_array() {
   (IFS=$'\034'; printf '%s' "${out[*]}")
 }
 
-declare -a CFG_SOURCE=() CFG_TARGET=() CFG_STRATEGY=() CFG_OS=() CFG_HOSTS=() CFG_KEYS=()
+declare -a CFG_SOURCE=() CFG_TARGET=() CFG_STRATEGY=() CFG_KEYS=()
+declare -a SELECTOR_NAME=() SELECTOR_COMMAND=() SELECTOR_VALUE=()
+default_selectors() {
+  SELECTOR_NAME=(os distro host)
+  SELECTOR_COMMAND=(
+    $'case "$(uname -s)" in\n  Linux)  echo linux ;;\n  Darwin) echo macos ;;\nesac'
+    $'if [[ -r /etc/os-release ]]; then\n  . /etc/os-release\n  echo "$ID"\nfi'
+    'hostname -s'
+  )
+}
+selector_index_for() {
+  local sought=$1 j
+  for j in "${!SELECTOR_NAME[@]}"; do [[ ${SELECTOR_NAME[j]} == "$sought" ]] && { SELECTOR_LOOKUP=$j; return 0; }; done
+  return 1
+}
+add_selector() {
+  local name=$1 command=$2
+  name=$(lowercase "$name")
+  valid_selector_token "$name" || die "invalid selector name '$name'"
+  selector_index_for "$name" && die "duplicate selector '$name'"
+  [[ -n $command ]] || die "selector '$name' has an empty command"
+  SELECTOR_NAME+=("$name"); SELECTOR_COMMAND+=("$command")
+}
 cfg_index_for() {
   local sought=$1 j
   for j in "${!CFG_SOURCE[@]}"; do [[ ${CFG_SOURCE[j]} == "$sought" ]] && { CFG_LOOKUP=$j; return 0; }; done
   return 1
 }
 parse_manifest() {
-  local file=$REPO/dots.toml line n=0 section= key value source i defaults_keys=
+  local file=$REPO/dots.toml raw line n=0 section= key value source i defaults_keys= selectors_seen=0 triple_key= triple_value=
   DEFAULT_STRATEGY=symlink
+  default_selectors
   [[ -f $file ]] || die "dots.toml is required for repository discovery and metadata"
-  while IFS= read -r line || [[ -n $line ]]; do
+  while IFS= read -r raw || [[ -n $raw ]]; do
     ((++n))
+    if [[ -n $triple_key ]]; then
+      line=$(trim "$raw")
+      if [[ $line == '"""' ]]; then
+        add_selector "$triple_key" "$triple_value"
+        triple_key= triple_value=
+      else
+        triple_value+="$raw"$'\n'
+      fi
+      continue
+    fi
+    line=$raw
     line=${line%%#*}; line=$(trim "$line"); [[ -z $line ]] && continue
     if [[ $line =~ ^\[defaults\]$ ]]; then section=defaults; continue; fi
+    if [[ $line =~ ^\[selectors\]$ ]]; then
+      if (( ! selectors_seen )); then SELECTOR_NAME=(); SELECTOR_COMMAND=(); selectors_seen=1; fi
+      section=selectors; continue
+    fi
     if [[ $line =~ ^\[\"([^\"]+)\"\]$ ]]; then
       source=${BASH_REMATCH[1]}; valid_relpath "$source" || die "dots.toml:$n: unsafe source path"
       if cfg_index_for "$source"; then die "dots.toml:$n: duplicate table '$source'"; fi
-      i=${#CFG_SOURCE[@]}; CFG_SOURCE+=("$source"); CFG_TARGET+=("$source"); CFG_STRATEGY+=(""); CFG_OS+=(""); CFG_HOSTS+=(""); CFG_KEYS+=("|"); section=$source; continue
+      i=${#CFG_SOURCE[@]}; CFG_SOURCE+=("$source"); CFG_TARGET+=("$source"); CFG_STRATEGY+=(""); CFG_KEYS+=("|"); section=$source; continue
     fi
-    [[ $line =~ ^([a-z]+)[[:space:]]*=[[:space:]]*(.*)$ ]] || die "dots.toml:$n: unsupported syntax"
+    [[ $line =~ ^([A-Za-z0-9._-]+)[[:space:]]*=[[:space:]]*(.*)$ ]] || die "dots.toml:$n: unsupported syntax"
     key=${BASH_REMATCH[1]}; value=${BASH_REMATCH[2]}
     if [[ $section == defaults ]]; then
       [[ $key == strategy ]] || die "dots.toml:$n: only defaults.strategy is supported"
       [[ $defaults_keys != *"|$key|"* ]] || die "dots.toml:$n: duplicate key '$key'"
       defaults_keys="${defaults_keys}|$key|"
       DEFAULT_STRATEGY=$(unquote "$value") || die "dots.toml:$n: expected a simple quoted string"
+      continue
+    fi
+    if [[ $section == selectors ]]; then
+      if [[ $value == '"""' ]]; then triple_key=$key; triple_value=; continue; fi
+      value=$(unquote "$value") || die "dots.toml:$n: selector commands must be quoted strings or triple-quoted blocks"
+      add_selector "$key" "$value"
       continue
     fi
     [[ -n $section ]] || die "dots.toml:$n: key outside a table"
@@ -134,46 +180,109 @@ parse_manifest() {
     case $key in
       target) CFG_TARGET[i]=$(unquote "$value") || die "dots.toml:$n: expected a simple quoted string"; valid_relpath "${CFG_TARGET[i]}" || die "dots.toml:$n: unsafe target path" ;;
       strategy) CFG_STRATEGY[i]=$(unquote "$value") || die "dots.toml:$n: expected a simple quoted string" ;;
-      os) CFG_OS[i]=$(parse_string_array "$value") || die "dots.toml:$n: expected an array of simple quoted strings" ;;
-      hosts) CFG_HOSTS[i]=$(parse_string_array "$value") || die "dots.toml:$n: expected an array of simple quoted strings" ;;
       *) die "dots.toml:$n: unsupported key '$key'" ;;
     esac
   done < "$file"
+  [[ -z $triple_key ]] || die "dots.toml:$n: unterminated selector command for '$triple_key'"
   case $DEFAULT_STRATEGY in symlink|hardlink|copy) ;; *) die "invalid defaults.strategy '$DEFAULT_STRATEGY'";; esac
 }
 
-list_has() { local needle=$1 list=$2 x; IFS=$'\034' read -r -a _list <<< "$list"; for x in "${_list[@]}"; do [[ $x == "$needle" ]] && return 0; done; return 1; }
-entry_enabled() {
-  local i=$1
-  [[ -z ${CFG_OS[i]} ]] || list_has "$CURRENT_OS" "${CFG_OS[i]}" || return 1
-  [[ -z ${CFG_HOSTS[i]} ]] || list_has "$CURRENT_HOST" "${CFG_HOSTS[i]}" || return 1
+evaluate_selectors() {
+  local i output line value count
+  SELECTOR_VALUE=()
+  for i in "${!SELECTOR_NAME[@]}"; do
+    output=$(bash -c "${SELECTOR_COMMAND[i]}") || die "selector '${SELECTOR_NAME[i]}' failed"
+    value= count=0
+    while IFS= read -r line || [[ -n $line ]]; do
+      line=$(trim "$line")
+      [[ -z $line ]] && continue
+      value=$line; ((++count))
+    done <<< "$output"
+    (( count <= 1 )) || die "selector '${SELECTOR_NAME[i]}' produced multiple values"
+    value=$(lowercase "$value")
+    [[ -z $value ]] || valid_selector_token "$value" || die "selector '${SELECTOR_NAME[i]}' produced invalid value '$value'"
+    SELECTOR_VALUE+=("$value")
+  done
 }
 
-declare -a ESOURCE=() ETARGET=() ESTRATEGY=() ETYPE=()
+declare -a LAYER_ROOT=() LAYER_LABEL=() ESOURCE=() ESOURCE_LAYER=() ELOGICAL=() ETARGET=() ESTRATEGY=() ETYPE=()
+declare -a RESOLVED_LOGICAL=() RESOLVED_SOURCE=()
+resolved_index_for() { local wanted=$1 j; for j in "${!RESOLVED_LOGICAL[@]}"; do [[ ${RESOLVED_LOGICAL[j]} == "$wanted" ]] && { RESOLVED_LOOKUP=$j; return 0; }; done; return 1; }
+set_resolved() { local logical=$1 physical=$2; if resolved_index_for "$logical"; then RESOLVED_SOURCE[RESOLVED_LOOKUP]=$physical; else RESOLVED_LOGICAL+=("$logical"); RESOLVED_SOURCE+=("$physical"); fi; }
+resolved_source_for() { resolved_index_for "$1" && { RESOLVED_RESULT=${RESOLVED_SOURCE[RESOLVED_LOOKUP]}; return 0; }; return 1; }
 add_entry() {
-  local s=$1 t=$2 st=$3 ty=$4 existing
-  valid_relpath "$s" || die "unsafe source path '$s'"; valid_relpath "$t" || die "unsafe target path '$t'"
-  case $st in symlink|hardlink|copy) ;; *) die "invalid strategy '$st' for '$s'";; esac
-  [[ -e $REPO/$s || -L $REPO/$s ]] || die "source does not exist: $s"
-  [[ $st != hardlink || $ty == file ]] || die "cannot hardlink directory '$s'"
+  local physical=$1 logical=$2 t=$3 st=$4 ty=$5 existing layer=base i
+  valid_relpath "$logical" || die "unsafe source path '$logical'"; valid_relpath "$t" || die "unsafe target path '$t'"
+  case $st in symlink|hardlink|copy) ;; *) die "invalid strategy '$st' for '$logical'";; esac
+  [[ -e $physical || -L $physical ]] || die "source does not exist: $logical"
+  [[ $physical == "$REPO/"* ]] || die "source escapes repository: $logical"
+  [[ $st != hardlink || $ty == file ]] || die "cannot hardlink directory '$logical'"
   for existing in "${ETARGET[@]}"; do [[ $existing != "$t" ]] || die "conflicting target definitions for '$t'"; done
-  ESOURCE+=("$s"); ETARGET+=("$t"); ESTRATEGY+=("$st"); ETYPE+=("$ty")
+  for i in "${!LAYER_ROOT[@]}"; do [[ $physical == "${LAYER_ROOT[i]}/"* ]] && layer=${LAYER_LABEL[i]}; done
+  ESOURCE+=("$physical"); ESOURCE_LAYER+=("$layer"); ELOGICAL+=("$logical"); ETARGET+=("$t"); ESTRATEGY+=("$st"); ETYPE+=("$ty")
 }
 under_explicit() { local p=$1 x; for x in "${CFG_SOURCE[@]}"; do [[ $p == "$x" || $p == "$x/"* ]] && return 0; done; return 1; }
 build_desired() {
-  local i s t st p ty
-  CURRENT_OS=$(uname -s | tr '[:upper:]' '[:lower:]'); CURRENT_HOST=$(hostname -s 2>/dev/null || hostname)
-  for i in "${!CFG_SOURCE[@]}"; do
-    entry_enabled "$i" || continue
-    s=${CFG_SOURCE[i]}; t=${CFG_TARGET[i]}; st=${CFG_STRATEGY[i]:-$DEFAULT_STRATEGY}
-    [[ -d $REPO/$s && ! -L $REPO/$s ]] && ty=dir || ty=file
-    add_entry "$s" "$t" "$st" "$ty"
+  local i s t st p ty root logical source layer source_type seen_type
+  evaluate_selectors
+  LAYER_ROOT=("$REPO"); LAYER_LABEL=(base)
+  for i in "${!SELECTOR_NAME[@]}"; do
+    [[ -n ${SELECTOR_VALUE[i]} ]] || continue
+    root=$REPO/.dots/${SELECTOR_NAME[i]}/${SELECTOR_VALUE[i]}
+    [[ -d $root && ! -L $root ]] || continue
+    LAYER_ROOT+=("$root"); LAYER_LABEL+=("${SELECTOR_NAME[i]}=${SELECTOR_VALUE[i]}")
   done
-  while IFS= read -r -d '' p; do
-    p=${p#"$REPO/"}; under_explicit "$p" && continue
-    add_entry "$p" "$p" "$DEFAULT_STRATEGY" file
-  done < <(find -P "$REPO" \( -path "$REPO/.git" -o -path "$REPO/dots.toml" -o -path "$REPO/bin" -o -path "$REPO/lib" -o -path "$REPO/tests" -o -path "$REPO/README.md" \) -prune -o \( -type f -o -type l \) -print0)
+  RESOLVED_LOGICAL=(); RESOLVED_SOURCE=()
+  for layer in "${!LAYER_ROOT[@]}"; do
+    root=${LAYER_ROOT[layer]}
+    while IFS= read -r -d '' p; do
+      logical=${p#"$root/"}; set_resolved "$logical" "$p"
+    done < <(find -P "$root" \( -path "$root/.git" -o -path "$root/.dots" -o -path "$root/dots.toml" \) -prune -o \( -type f -o -type l \) -print0)
+  done
+  validate_resolved_hierarchy
+  sort_resolved
+  for i in "${!CFG_SOURCE[@]}"; do
+    s=${CFG_SOURCE[i]}; t=${CFG_TARGET[i]}; st=${CFG_STRATEGY[i]:-$DEFAULT_STRATEGY}
+    source= seen_type=
+    for layer in "${!LAYER_ROOT[@]}"; do
+      root=${LAYER_ROOT[layer]}
+      [[ -e $root/$s || -L $root/$s ]] || continue
+      if [[ -d $root/$s && ! -L $root/$s ]]; then source_type=dir; else source_type=file; fi
+      [[ -z $seen_type || $seen_type == "$source_type" ]] || die "file/directory type conflict at '$s'"
+      seen_type=$source_type; source=$root/$s
+    done
+    [[ -n $source ]] || die "source does not exist: $s"
+    if [[ -d $source && ! -L $source ]]; then ty=dir; else ty=file; fi
+    add_entry "$source" "$s" "$t" "$st" "$ty"
+  done
+  for i in "${!RESOLVED_LOGICAL[@]}"; do
+    logical=${RESOLVED_LOGICAL[i]}; under_explicit "$logical" && continue
+    add_entry "${RESOLVED_SOURCE[i]}" "$logical" "$logical" "$DEFAULT_STRATEGY" file
+  done
   validate_target_hierarchy
+}
+
+sort_resolved() {
+  local i j temp
+  for ((i = 0; i < ${#RESOLVED_LOGICAL[@]}; i++)); do
+    for ((j = i + 1; j < ${#RESOLVED_LOGICAL[@]}; j++)); do
+      [[ ${RESOLVED_LOGICAL[j]} < ${RESOLVED_LOGICAL[i]} ]] || continue
+      temp=${RESOLVED_LOGICAL[i]}; RESOLVED_LOGICAL[i]=${RESOLVED_LOGICAL[j]}; RESOLVED_LOGICAL[j]=$temp
+      temp=${RESOLVED_SOURCE[i]}; RESOLVED_SOURCE[i]=${RESOLVED_SOURCE[j]}; RESOLVED_SOURCE[j]=$temp
+    done
+  done
+}
+
+validate_resolved_hierarchy() {
+  local i j a b
+  for i in "${!RESOLVED_LOGICAL[@]}"; do
+    a=${RESOLVED_LOGICAL[i]}
+    for j in "${!RESOLVED_LOGICAL[@]}"; do
+      [[ $i == "$j" ]] && continue
+      b=${RESOLVED_LOGICAL[j]}
+      [[ $b == "$a/"* ]] && die "file/directory type conflict at '$a'"
+    done
+  done
 }
 
 validate_target_hierarchy() {
@@ -191,7 +300,7 @@ same_link() { [[ -L $2 && $(readlink "$2") == "$1" ]]; }
 same_hardlink() { [[ -f $1 && -f $2 && $(stat -c '%d:%i' "$1" 2>/dev/null || stat -f '%d:%i' "$1") == $(stat -c '%d:%i' "$2" 2>/dev/null || stat -f '%d:%i' "$2") ]]; }
 same_copy() { if [[ -d $1 && ! -L $1 ]]; then [[ -d $2 && ! -L $2 ]] && diff -r -q "$1" "$2" >/dev/null 2>&1; else [[ -f $2 && ! -L $2 ]] && cmp -s "$1" "$2"; fi; }
 inspect_entry() {
-  local i=$1 src=$REPO/${ESOURCE[i]} dst=$TARGET_HOME/${ETARGET[i]} st=${ESTRATEGY[i]}
+  local i=$1 src=${ESOURCE[i]} dst=$TARGET_HOME/${ETARGET[i]} st=${ESTRATEGY[i]}
   if [[ ! -e $dst && ! -L $dst ]]; then INSPECT=missing; return; fi
   case $st in symlink) same_link "$src" "$dst" && INSPECT=correct || INSPECT=conflict;; hardlink) same_hardlink "$src" "$dst" && INSPECT=correct || INSPECT=conflict;; copy) same_copy "$src" "$dst" && INSPECT=correct || INSPECT=differs;; esac
 }
@@ -210,12 +319,19 @@ ensure_parent() {
 }
 replace_target() { local dst=$1; if [[ -L $dst || -f $dst ]]; then rm "$dst"; else rm -rf "$dst"; fi; }
 apply_one() {
-  local i=$1 src=$REPO/${ESOURCE[i]} dst=$TARGET_HOME/${ETARGET[i]} st=${ESTRATEGY[i]}
+  local i=$1 src=${ESOURCE[i]} dst=$TARGET_HOME/${ETARGET[i]} st=${ESTRATEGY[i]}
   ensure_parent "$dst"
   case $st in symlink) ln -s "$src" "$dst";; hardlink) ln "$src" "$dst" || die "cannot hardlink '${ESOURCE[i]}' (possibly different filesystems)";; copy) if [[ ${ETYPE[i]} == dir ]]; then cp -R "$src" "$dst"; else cp "$src" "$dst"; fi;; esac
 }
 render_status() {
-  local i; printf '%sdots  %s%s\n\n' "$C_DIM" "$(display_repo)" "$C_RESET"; for i in "${!ESOURCE[@]}"; do inspect_entry "$i"; case $INSPECT in correct) printf '%s  %s\n' "$(mark "$C_OK" '✓')" "${ETARGET[i]}";; missing) printf '%s  %s  %s\n' "$(mark "$C_ADD" '→')" "${ETARGET[i]}" "${C_DIM}missing${C_RESET}";; differs) printf '%s  %s  %s\n' "$(mark "$C_WARN" '●')" "${ETARGET[i]}" "${C_WARN}differs${C_RESET}";; conflict) printf '%s  %s  %s\n' "$(mark "$C_ERR" '!')" "${ETARGET[i]}" "${C_ERR}conflict${C_RESET}";; esac; done
+  local i shown=0; printf '%sdots  %s%s\n' "$C_DIM" "$(display_repo)" "$C_RESET"
+  for i in "${!SELECTOR_NAME[@]}"; do [[ -n ${SELECTOR_VALUE[i]} ]] || continue; ((++shown)); done
+  if (( shown )); then
+    printf '%sSelectors%s\n' "$C_DIM" "$C_RESET"
+    for i in "${!SELECTOR_NAME[@]}"; do [[ -n ${SELECTOR_VALUE[i]} ]] || continue; printf '  %-12s %s\n' "${SELECTOR_NAME[i]}" "${SELECTOR_VALUE[i]}"; done
+  fi
+  printf '\n'
+  for i in "${!ESOURCE[@]}"; do inspect_entry "$i"; case $INSPECT in correct) printf '%s  %s\n' "$(mark "$C_OK" '✓')" "${ETARGET[i]}";; missing) printf '%s  %s  %s\n' "$(mark "$C_ADD" '→')" "${ETARGET[i]}" "${C_DIM}missing${C_RESET}";; differs) printf '%s  %s  %s\n' "$(mark "$C_WARN" '●')" "${ETARGET[i]}" "${C_WARN}differs${C_RESET}";; conflict) printf '%s  %s  %s\n' "$(mark "$C_ERR" '!')" "${ETARGET[i]}" "${C_ERR}conflict${C_RESET}";; esac; done
 }
 cmd_apply() {
   local force=$1 i created=0 unchanged=0 conflicts=0; printf '%s\n\n' "${C_BOLD}dots apply${C_RESET}"
