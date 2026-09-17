@@ -32,6 +32,10 @@ new_case selectiveerror; printf a > "$R/a"; printf '\n[selectors]\nrole = "false
 
 new_case nested; mkdir -p "$R/.config/app"; printf x > "$R/.config/app/config"; run apply >/dev/null; ok test -L "$H/.config/app/config"; done_case
 
+new_case gitignore; printf root > "$R/.gitignore"; mkdir -p "$R/.config/nvim" "$R/_ser8/.config/app"; printf nested > "$R/.config/nvim/.gitignore"; printf overlay > "$R/_ser8/.config/app/.gitignore"; printf '\n[selectors]\nhost = "printf ser8"\n' >> "$R/dots.toml"; run status > "$TMP/out"; if grep -q '^.*  .gitignore' "$TMP/out"; then exit 1; fi; ok grep -q '.config/nvim/.gitignore' "$TMP/out"; ok grep -q '.config/app/.gitignore' "$TMP/out"; run apply >/dev/null; ok test ! -e "$H/.gitignore"; ok test -L "$H/.config/nvim/.gitignore"; ok test -L "$H/.config/app/.gitignore"; if run apply .gitignore > "$TMP/out" 2>&1; then exit 1; fi; ok grep -q 'path is not managed' "$TMP/out"; done_case
+
+new_case atomicgitignore; mkdir -p "$R/.config/nvim"; printf nested > "$R/.config/nvim/.gitignore"; printf '\n[".config/nvim"]\n' >> "$R/dots.toml"; run apply .config/nvim >/dev/null; ok test -L "$H/.config/nvim"; ok test -f "$H/.config/nvim/.gitignore"; done_case
+
 new_case atomic; mkdir -p "$R/.config/nvim/lua"; printf x > "$R/.config/nvim/lua/init.lua"; printf '\n[".config/nvim"]\n' >> "$R/dots.toml"; run apply >/dev/null; ok test -L "$H/.config/nvim"; ok test ! -L "$H/.config/nvim/lua/init.lua"; done_case
 
 new_case copy; printf source > "$R/file"; printf '\n["file"]\nstrategy = "copy"\n' >> "$R/dots.toml"; run apply >/dev/null; ok cmp -s "$R/file" "$H/file"; printf changed > "$H/file"; run status > "$TMP/out"; ok grep -q 'file conflict' "$TMP/out"; run apply > "$TMP/out" || true; ok grep -q 'file conflict' "$TMP/out"; done_case

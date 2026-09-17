@@ -248,6 +248,7 @@ build_desired() {
     while IFS= read -r -d '' p; do
       logical=${p#"$root/"}
       [[ $layer != 0 || $logical != _*/* ]] || continue
+      [[ $layer != 0 || $logical != .gitignore ]] || continue
       set_resolved "$logical" "$p"
     done < <(
       find -P "$root" \( -path "$root/.git" -o -path "$root/dots.toml" \) -prune -o \( -type f -o -type l \) -print0
@@ -257,6 +258,7 @@ build_desired() {
   sort_resolved
   for i in "${!CFG_SOURCE[@]}"; do
     s=${CFG_SOURCE[i]}; t=${CFG_TARGET[i]}; st=${CFG_STRATEGY[i]:-$DEFAULT_STRATEGY}
+    [[ $s != .gitignore ]] || die "repository metadata cannot be managed: .gitignore"
     [[ $s == */* || $s != _* || ! -d $REPO/$s ]] || die "top-level overlay directory '$s' cannot be a managed entry"
     source= seen_type=
     for layer in "${!LAYER_ROOT[@]}"; do
