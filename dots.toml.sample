@@ -17,10 +17,20 @@
 # or embedded quotes. Paths must be non-empty, relative, and contain no ..
 # components. Explicit entries suppress implicit scanning of their source path
 # and its descendants.
+#
+# Selector order defines overlay precedence. With the defaults below:
+#
+#   base < _linux < _omarchy < _ser8
+#
+# A selector value activates the matching top-level _value/ directory. Those
+# directories are sparse trees that mirror $HOME and are never deployed as
+# literal _value directories.
 
 [defaults]
 strategy = "symlink"
 
+# Selectors run Bash commands. Their lowercased values activate top-level
+# overlays such as _linux/, _omarchy/, and _ser8/ in this declaration order.
 [selectors]
 os = """
 case "$(uname -s)" in
@@ -37,3 +47,12 @@ fi
 """
 
 host = "hostname -s"
+
+# [".config/nvim"]
+# Explicitly configured directories are atomic deployment units.
+
+# [".config/example"]
+# strategy = "copy"
+
+# ["shared/bashrc"]
+# target = ".bashrc"

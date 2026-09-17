@@ -1,29 +1,58 @@
 # dots
 
-`dots` is a small, stateless Bash dotfile manager. A dotfiles repository
-mirrors `$HOME`; files are symlinked by default, and `dots.toml` describes only
-exceptions. The repository is the source of truth—there is no deployment
-database or generated-dotfile layer.
+`dots` is a small, stateless Bash dotfile manager. Your dotfiles repository
+mirrors `$HOME`: normal files map to the same relative paths and are symlinked
+by default. `dots.toml` describes exceptions, while selectors activate sparse
+machine-specific overlays.
 
-```bash
-dots status
-dots apply
-dots remove .config/nvim
+```text
+dotfiles/
+├── dots.toml
+├── .bashrc
+├── .gitconfig
+├── .config/
+│   ├── ghostty/
+│   └── nvim/
+├── _linux/
+├── _omarchy/
+└── _ser8/
 ```
 
-Use `dots --repo ~/some-dotfiles status` to select a repository explicitly.
-Otherwise discovery is: current directory when it contains `dots.toml`, then
-`$DOTS_REPO`, then `~/.dotfiles`. It never walks upward.
+If a file is not part of the desired `$HOME` state, it should not live in the
+dotfiles repository. There is intentionally no ignore mechanism.
+
+## Install dots
+
+```bash
+git clone <dots-repository>
+cd dots
+./install.sh
+```
+
+This copies one self-contained executable to `~/.local/bin/dots`; the clone
+may then be removed. It does not change `PATH` or shell startup files. Remove
+it with `./uninstall.sh` (or remove that one executable directly). Both scripts
+accept `--bin-dir <path>`.
+
+The application repository is not a dotfiles repository. Copy its sample to
+start one:
+
+```bash
+mkdir -p ~/.dotfiles
+cp /path/to/dots/dots.toml.sample ~/.dotfiles/dots.toml
+cd ~/.dotfiles
+dots status
+```
+
+Repository discovery is: `--repo <path>`, the current directory when it
+directly contains `dots.toml`, `$DOTS_REPO`, then `~/.dotfiles`. It never walks
+upward; `dots.toml.sample` does not qualify.
 
 ## Selectors and overlays
 
-Selectors classify the current machine by executing small Bash commands.
-`dots` does not know what an OS, distribution, hostname, architecture, or role
-is; a selector is simply `name + Bash command → normalized value → overlay`.
-Every selected overlay is a sparse tree of real files and directories, so its
-contents can still be symlinked, copied, or hardlinked directly.
-
-The shipped manifest makes the default selectors visible:
+A selector is simply `name + Bash command → normalized value → overlay`.
+`dots` gives no special meaning to names such as OS, distro, host, arch, or
+role. The default selectors, included visibly in the sample, are:
 
 ```toml
 [selectors]
@@ -44,45 +73,27 @@ fi
 host = "hostname -s"
 ```
 
-Typical values might be `os = linux`, `distro = omarchy`, and `host = ser8`.
-The same defaults apply internally if a dotfiles manifest omits `[selectors]`.
+For `os = linux`, `distro = omarchy`, and `host = ser8`, active layers are:
 
 ```text
-.dotfiles/
-├── .bashrc
-├── .config/
-│   ├── ghostty/config
-│   └── nvim/...
-├── .dots/
-│   ├── os/
-│   │   ├── linux/
-│   │   └── macos/
-│   ├── distro/
-│   │   ├── omarchy/
-│   │   └── fedora/
-│   └── host/
-│       ├── ser8/
-│       └── thinkpad/
-└── dots.toml
+base < _linux < _omarchy < _ser8
 ```
 
-Every directory below a selector value mirrors `$HOME`. For example,
-`.dots/host/ser8/.bashrc` replaces the common `.bashrc` only when `host` is
-`ser8`; `.dots/distro/omarchy/.config/omarchy/config` can exist only for that
-distribution. `.dots/` is metadata and is never deployed.
+That order comes from selector definition order, not hard-coded knowledge of
+the names. Each top-level `_<value>/` directory mirrors `$HOME`. Thus
+`_ser8/.bashrc` overrides `.bashrc`, and an overlay-only file such as
+`_omarchy/.config/omarchy/config` is also deployed. Overlays are sparse: files
+not present in an overlay continue to come from lower-precedence layers.
 
-Base files have the lowest precedence. With the default selector order:
+Only top-level underscore **directories** are reserved overlays. A nested path
+such as `.config/app/_cache/file` is ordinary content; ordinary underscore
+files are ordinary content too. Inactive overlay directories are ignored.
 
-```text
-base < os < distro < host
-```
-
-This is not hard-coded: selector definition order determines precedence.
-Directories merge sparsely at file level unless a directory is explicitly
-listed in `dots.toml`, in which case it is atomic and the highest layer's whole
-directory wins.
-
-You can replace the default model entirely:
+Selector output and selector names are lowercased. Non-empty values must use
+only `a-z`, `0-9`, `.`, `_`, and `-`; invalid values fail rather than being
+silently sanitized. Empty output contributes no layer. Two active selectors
+cannot resolve to the same value, because that would make one overlay
+ambiguous. Custom selectors are straightforward:
 
 ```toml
 [selectors]
@@ -91,31 +102,24 @@ arch = "uname -m"
 role = "~/.local/bin/machine-role"
 ```
 
-This activates `.dots/platform/...`, `.dots/arch/...`, and `.dots/role/...`.
-Output and names are lowercased. A non-empty output must use only `a-z`, `0-9`,
-`.`, `_`, and `-`; invalid values fail instead of being silently rewritten.
-Empty output skips that selector, while a failing command or multiple values is
-an error.
+## Deployment behavior
 
-## Manifest and safety
+`dots status`, `dots apply`, and `dots remove <path>` derive all state from the
+repository, manifest, and `$HOME`. A manifest entry always names the logical
+path, regardless of which layer supplies its physical source:
 
-The supported TOML subset is intentionally narrow: `[defaults]`,
-`[selectors]`, and `["path"]` tables; quoted strings; and triple-quoted
-selector command blocks. Entry keys are `strategy` and `target`. Supported
-strategies are `symlink`, `copy`, and file-only `hardlink`.
+```toml
+[".config/example"]
+strategy = "copy"
 
-`status` is read-only. `apply` skips conflicts; `apply --force` replaces them.
-`remove` only deletes an exact current deployment. Colors are terminal-only and
-respect `NO_COLOR`.
-
-## Installation
-
-```bash
-git clone <dots-repository>
-cd dots
-./install.sh
+[".config/nvim"]
+# An explicitly configured directory is atomic: its highest layer wins whole.
 ```
 
-This installs a self-contained `~/.local/bin/dots` without modifying `PATH` or
-shell startup files. Use `./install.sh --bin-dir "$HOME/bin"` for another
-location. `./uninstall.sh [--bin-dir <path>]` removes only that exact command.
+Strategies are `symlink` (default), file-only `hardlink`, and `copy`.
+Symlinks point directly to the physical winning source; no rendered trees or
+templates exist. `apply` skips conflicts unless explicitly forced.
+
+> The repository mirrors `$HOME`. Files are symlinked by default.
+> `dots.toml` describes exceptions. Selectors activate sparse overlays for
+> machine-specific differences.

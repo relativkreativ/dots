@@ -39,7 +39,7 @@ valid_relpath() {
   [[ -n $p && $p != /* && $p != */ && $p != *'//' && $p != . && $p != .. && $p != ../* && $p != */../* && $p != */.. && $p != *$'\n'* ]]
 }
 valid_selector_token() { [[ $1 =~ ^[a-z0-9._-]+$ ]]; }
-lowercase() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+lowercase() { printf '%s' "$1" | LC_ALL=C tr 'A-Z' 'a-z'; }
 
 expand_repo_path() {
   case $1 in
@@ -188,7 +188,7 @@ parse_manifest() {
 }
 
 evaluate_selectors() {
-  local i output line value count
+  local i j output line value count
   SELECTOR_VALUE=()
   for i in "${!SELECTOR_NAME[@]}"; do
     output=$(bash -c "${SELECTOR_COMMAND[i]}") || die "selector '${SELECTOR_NAME[i]}' failed"
@@ -200,7 +200,14 @@ evaluate_selectors() {
     done <<< "$output"
     (( count <= 1 )) || die "selector '${SELECTOR_NAME[i]}' produced multiple values"
     value=$(lowercase "$value")
-    [[ -z $value ]] || valid_selector_token "$value" || die "selector '${SELECTOR_NAME[i]}' produced invalid value '$value'"
+    if [[ -n $value ]] && ! valid_selector_token "$value"; then
+      die "selector '${SELECTOR_NAME[i]}' returned invalid value '$value' (allowed characters: a-z, 0-9, ., _, -)"
+    fi
+    if [[ -n $value ]]; then
+      for j in "${!SELECTOR_VALUE[@]}"; do
+        [[ ${SELECTOR_VALUE[j]} != "$value" ]] || die "selectors '${SELECTOR_NAME[j]}' and '${SELECTOR_NAME[i]}' both resolve to '$value' (overlay directory '_$value' would be ambiguous)"
+      done
+    fi
     SELECTOR_VALUE+=("$value")
   done
 }
@@ -228,21 +235,26 @@ build_desired() {
   LAYER_ROOT=("$REPO"); LAYER_LABEL=(base)
   for i in "${!SELECTOR_NAME[@]}"; do
     [[ -n ${SELECTOR_VALUE[i]} ]] || continue
-    root=$REPO/.dots/${SELECTOR_NAME[i]}/${SELECTOR_VALUE[i]}
+    root=$REPO/_${SELECTOR_VALUE[i]}
     [[ -d $root && ! -L $root ]] || continue
-    LAYER_ROOT+=("$root"); LAYER_LABEL+=("${SELECTOR_NAME[i]}=${SELECTOR_VALUE[i]}")
+    LAYER_ROOT+=("$root"); LAYER_LABEL+=("_${SELECTOR_VALUE[i]}")
   done
   RESOLVED_LOGICAL=(); RESOLVED_SOURCE=()
   for layer in "${!LAYER_ROOT[@]}"; do
     root=${LAYER_ROOT[layer]}
     while IFS= read -r -d '' p; do
-      logical=${p#"$root/"}; set_resolved "$logical" "$p"
-    done < <(find -P "$root" \( -path "$root/.git" -o -path "$root/.dots" -o -path "$root/dots.toml" \) -prune -o \( -type f -o -type l \) -print0)
+      logical=${p#"$root/"}
+      [[ $layer != 0 || $logical != _*/* ]] || continue
+      set_resolved "$logical" "$p"
+    done < <(
+      find -P "$root" \( -path "$root/.git" -o -path "$root/dots.toml" \) -prune -o \( -type f -o -type l \) -print0
+    )
   done
   validate_resolved_hierarchy
   sort_resolved
   for i in "${!CFG_SOURCE[@]}"; do
     s=${CFG_SOURCE[i]}; t=${CFG_TARGET[i]}; st=${CFG_STRATEGY[i]:-$DEFAULT_STRATEGY}
+    [[ $s == */* || $s != _* || ! -d $REPO/$s ]] || die "top-level overlay directory '$s' cannot be a managed entry"
     source= seen_type=
     for layer in "${!LAYER_ROOT[@]}"; do
       root=${LAYER_ROOT[layer]}
@@ -299,10 +311,27 @@ validate_target_hierarchy() {
 same_link() { [[ -L $2 && $(readlink "$2") == "$1" ]]; }
 same_hardlink() { [[ -f $1 && -f $2 && $(stat -c '%d:%i' "$1" 2>/dev/null || stat -f '%d:%i' "$1") == $(stat -c '%d:%i' "$2" 2>/dev/null || stat -f '%d:%i' "$2") ]]; }
 same_copy() { if [[ -d $1 && ! -L $1 ]]; then [[ -d $2 && ! -L $2 ]] && diff -r -q "$1" "$2" >/dev/null 2>&1; else [[ -f $2 && ! -L $2 ]] && cmp -s "$1" "$2"; fi; }
+classify_conflict() {
+  local dst=$1
+  if [[ -L $dst ]]; then
+    [[ -e $dst ]] && INSPECT_REASON=wrong_symlink || INSPECT_REASON=broken_symlink
+  elif [[ -f $dst ]]; then
+    INSPECT_REASON=file
+  elif [[ -d $dst ]]; then
+    INSPECT_REASON=directory
+  else
+    INSPECT_REASON=other
+  fi
+}
+conflict_label() {
+  case $1 in broken_symlink) printf 'broken symlink';; wrong_symlink) printf 'wrong symlink';; file) printf 'file conflict';; directory) printf 'directory conflict';; *) printf 'other conflict';; esac
+}
 inspect_entry() {
   local i=$1 src=${ESOURCE[i]} dst=$TARGET_HOME/${ETARGET[i]} st=${ESTRATEGY[i]}
-  if [[ ! -e $dst && ! -L $dst ]]; then INSPECT=missing; return; fi
-  case $st in symlink) same_link "$src" "$dst" && INSPECT=correct || INSPECT=conflict;; hardlink) same_hardlink "$src" "$dst" && INSPECT=correct || INSPECT=conflict;; copy) same_copy "$src" "$dst" && INSPECT=correct || INSPECT=differs;; esac
+  INSPECT_REASON=
+  if [[ ! -L $dst && ! -e $dst ]]; then INSPECT=missing; return; fi
+  case $st in symlink) same_link "$src" "$dst" && INSPECT=correct || INSPECT=conflict;; hardlink) same_hardlink "$src" "$dst" && INSPECT=correct || INSPECT=conflict;; copy) same_copy "$src" "$dst" && INSPECT=correct || INSPECT=conflict;; esac
+  [[ $INSPECT == correct ]] || classify_conflict "$dst"
 }
 ensure_parent() {
   local dst=$1 rel=${1#"$TARGET_HOME/"} parent_rel part current=$TARGET_HOME
@@ -331,14 +360,14 @@ render_status() {
     for i in "${!SELECTOR_NAME[@]}"; do [[ -n ${SELECTOR_VALUE[i]} ]] || continue; printf '  %-12s %s\n' "${SELECTOR_NAME[i]}" "${SELECTOR_VALUE[i]}"; done
   fi
   printf '\n'
-  for i in "${!ESOURCE[@]}"; do inspect_entry "$i"; case $INSPECT in correct) printf '%s  %s\n' "$(mark "$C_OK" '✓')" "${ETARGET[i]}";; missing) printf '%s  %s  %s\n' "$(mark "$C_ADD" '→')" "${ETARGET[i]}" "${C_DIM}missing${C_RESET}";; differs) printf '%s  %s  %s\n' "$(mark "$C_WARN" '●')" "${ETARGET[i]}" "${C_WARN}differs${C_RESET}";; conflict) printf '%s  %s  %s\n' "$(mark "$C_ERR" '!')" "${ETARGET[i]}" "${C_ERR}conflict${C_RESET}";; esac; done
+  for i in "${!ESOURCE[@]}"; do inspect_entry "$i"; case $INSPECT in correct) printf '%s  %s\n' "$(mark "$C_OK" '✓')" "${ETARGET[i]}";; missing) printf '%s  %s  %s\n' "$(mark "$C_ADD" '→')" "${ETARGET[i]}" "${C_DIM}missing${C_RESET}";; conflict) printf '%s  %s  %s\n' "$(mark "$C_ERR" '!')" "${ETARGET[i]}" "${C_ERR}$(conflict_label "$INSPECT_REASON")${C_RESET}";; esac; done
 }
 cmd_apply() {
   local force=$1 i created=0 unchanged=0 conflicts=0; printf '%s\n\n' "${C_BOLD}dots apply${C_RESET}"
   for i in "${!ESOURCE[@]}"; do inspect_entry "$i"; case $INSPECT in
     correct) ((++unchanged)); printf '%s %s\n' "$(mark "$C_OK" '✓')" "${ETARGET[i]}";;
     missing) apply_one "$i"; ((++created)); printf '%s %s %s %s\n' "$(mark "$C_ADD" '+')" "${ETARGET[i]}" "${C_DIM}→${C_RESET}" "${ESTRATEGY[i]}";;
-    differs|conflict) if (( force )); then ensure_parent "$TARGET_HOME/${ETARGET[i]}"; replace_target "$TARGET_HOME/${ETARGET[i]}"; apply_one "$i"; ((++created)); printf '%s %s %s %s %s\n' "$(mark "$C_ADD" '~')" "${ETARGET[i]}" "${C_DIM}→${C_RESET}" "${ESTRATEGY[i]}" "${C_WARN}(replaced)${C_RESET}"; else ((++conflicts)); printf '%s %s %s\n' "$(mark "$C_ERR" '!')" "${ETARGET[i]}" "${C_ERR}$INSPECT${C_RESET}"; fi;;
+    conflict) if (( force )); then ensure_parent "$TARGET_HOME/${ETARGET[i]}"; replace_target "$TARGET_HOME/${ETARGET[i]}"; apply_one "$i"; ((++created)); printf '%s %s %s %s %s\n' "$(mark "$C_ADD" '~')" "${ETARGET[i]}" "${C_DIM}→${C_RESET}" "${ESTRATEGY[i]}" "${C_WARN}(replaced)${C_RESET}"; else ((++conflicts)); printf '%s %s  %s\n' "$(mark "$C_ERR" '!')" "${ETARGET[i]}" "${C_ERR}$(conflict_label "$INSPECT_REASON")${C_RESET}"; fi;;
   esac; done
   printf '\n%s created, %s unchanged, %s conflict%s\n' "$created" "$unchanged" "$conflicts" "$([[ $conflicts == 1 ]] || printf s)"
   (( conflicts == 0 ))
