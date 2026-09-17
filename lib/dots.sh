@@ -21,7 +21,8 @@ Usage: dots [--repo <path>] [--help] [--version] <command>
 
 Commands:
   status          Show the derived deployment state (read-only).
-    apply [--force] Create missing deployments; --force replaces conflicts.
+  apply [--force] [path ...]
+                  Create selected deployments; without paths, apply all.
   remove <path>   Remove a deployment only when it still matches its source.
 
 Options:
@@ -31,6 +32,8 @@ Repository discovery, in order: --repo; the current directory when it contains
 dots.toml; DOTS_REPO; then ~/.dotfiles. DOTS_REPO supplies the default
 repository location and does not override a dots.toml in the current directory.
 DOTS_HOME overrides HOME only as a deployment target, primarily for testing.
+Apply paths are logical HOME-relative paths (for example, .config/nvim), not
+repository or overlay paths.
 EOF
 }
 
@@ -362,9 +365,40 @@ render_status() {
   printf '\n'
   for i in "${!ESOURCE[@]}"; do inspect_entry "$i"; case $INSPECT in correct) printf '%s  %s\n' "$(mark "$C_OK" '✓')" "${ETARGET[i]}";; missing) printf '%s  %s  %s\n' "$(mark "$C_ADD" '→')" "${ETARGET[i]}" "${C_DIM}missing${C_RESET}";; conflict) printf '%s  %s  %s\n' "$(mark "$C_ERR" '!')" "${ETARGET[i]}" "${C_ERR}$(conflict_label "$INSPECT_REASON")${C_RESET}";; esac; done
 }
+declare -a APPLY_INDEX=()
+select_apply_entries() {
+  local requested selected i j atomic
+  APPLY_INDEX=()
+  [[ $# -gt 0 ]] || { APPLY_INDEX=("${!ESOURCE[@]}"); return; }
+  for requested in "$@"; do
+    valid_relpath "$requested" || die "unsafe path selector: $requested"
+    selected=
+    for i in "${!ETARGET[@]}"; do
+      [[ ${ETARGET[i]} == "$requested" ]] && { selected=$i; break; }
+    done
+    if [[ -z $selected ]]; then
+      for i in "${!ETARGET[@]}"; do
+        [[ ${ETYPE[i]} == dir && $requested == "${ETARGET[i]}/"* ]] || continue
+        die "'$requested' is part of atomic directory '${ETARGET[i]}'; apply '${ETARGET[i]}' instead"
+      done
+      die "path is not managed by dots: $requested"
+    fi
+    for j in "${APPLY_INDEX[@]}"; do [[ $j != "$selected" ]] || { selected=; break; }; done
+    [[ -n $selected ]] && APPLY_INDEX+=("$selected")
+  done
+  # Preserve desired-state ordering, rather than argument or filesystem order.
+  selected=("${APPLY_INDEX[@]}"); APPLY_INDEX=()
+  for i in "${!ESOURCE[@]}"; do
+    for j in "${selected[@]}"; do [[ $i == "$j" ]] && APPLY_INDEX+=("$i"); done
+  done
+  return 0
+}
 cmd_apply() {
-  local force=$1 i created=0 unchanged=0 conflicts=0; printf '%s\n\n' "${C_BOLD}dots apply${C_RESET}"
-  for i in "${!ESOURCE[@]}"; do inspect_entry "$i"; case $INSPECT in
+  local force=$1 i created=0 unchanged=0 conflicts=0
+  shift
+  select_apply_entries "$@"
+  printf '%s\n\n' "${C_BOLD}dots apply${C_RESET}"
+  for i in "${APPLY_INDEX[@]}"; do inspect_entry "$i"; case $INSPECT in
     correct) ((++unchanged)); printf '%s %s\n' "$(mark "$C_OK" '✓')" "${ETARGET[i]}";;
     missing) apply_one "$i"; ((++created)); printf '%s %s %s %s\n' "$(mark "$C_ADD" '+')" "${ETARGET[i]}" "${C_DIM}→${C_RESET}" "${ESTRATEGY[i]}";;
     conflict) if (( force )); then ensure_parent "$TARGET_HOME/${ETARGET[i]}"; replace_target "$TARGET_HOME/${ETARGET[i]}"; apply_one "$i"; ((++created)); printf '%s %s %s %s %s\n' "$(mark "$C_ADD" '~')" "${ETARGET[i]}" "${C_DIM}→${C_RESET}" "${ESTRATEGY[i]}" "${C_WARN}(replaced)${C_RESET}"; else ((++conflicts)); printf '%s %s  %s\n' "$(mark "$C_ERR" '!')" "${ETARGET[i]}" "${C_ERR}$(conflict_label "$INSPECT_REASON")${C_RESET}"; fi;;
@@ -396,7 +430,18 @@ dots_main() {
   parse_manifest; build_desired
   case $command in
     status) [[ $# == 0 ]] || die 'status takes no arguments'; render_status ;;
-    apply) if [[ $# == 0 ]]; then cmd_apply 0; elif [[ $# == 1 && $1 == --force ]]; then cmd_apply 1; else die 'usage: dots apply [--force]'; fi ;;
+    apply)
+      local force=0 apply_paths=() arg
+      for arg in "$@"; do
+        if [[ $arg == --force ]]; then
+          (( force == 0 )) || die '--force may only be specified once'
+          force=1
+        else
+          apply_paths+=("$arg")
+        fi
+      done
+      cmd_apply "$force" "${apply_paths[@]}"
+      ;;
     remove) [[ $# == 1 ]] || die 'usage: dots remove <path>'; cmd_remove "$1" ;;
   esac
 }

@@ -18,6 +18,18 @@ ok test -f "$ROOT/dots.toml.sample"; ok test ! -e "$ROOT/dots.toml"
 
 new_case default; printf x > "$R/.bashrc"; run apply >/dev/null; ok test -L "$H/.bashrc"; ok test "$(readlink "$H/.bashrc")" = "$R/.bashrc"; run apply > "$TMP/out"; ok grep -q '0 created, 1 unchanged' "$TMP/out"; done_case
 
+new_case selective; printf a > "$R/.bashrc"; mkdir -p "$R/.config/git"; printf b > "$R/.config/git/config"; run apply .bashrc > "$TMP/out"; ok test -L "$H/.bashrc"; ok test ! -e "$H/.config/git/config"; ok grep -q '.bashrc' "$TMP/out"; if grep -q '.config/git/config' "$TMP/out"; then exit 1; fi; run apply .config/git/config .bashrc .config/git/config > "$TMP/out"; ok test -L "$H/.config/git/config"; ok grep -q '1 created, 1 unchanged' "$TMP/out"; done_case
+
+new_case selectiveforce; printf a > "$R/a"; printf b > "$R/b"; printf user-a > "$H/a"; printf user-b > "$H/b"; run apply --force a > "$TMP/out"; ok test -L "$H/a"; ok grep -q user-b "$H/b"; ok grep -q '1 created, 0 unchanged, 0 conflicts' "$TMP/out"; done_case
+
+new_case selectivevalidate; printf a > "$R/a"; printf b > "$R/b"; if run apply a does-not-exist > "$TMP/out" 2>&1; then exit 1; fi; ok test ! -e "$H/a"; ok grep -q 'path is not managed' "$TMP/out"; if run apply ../outside > "$TMP/out" 2>&1; then exit 1; fi; ok test ! -e "$H/a"; done_case
+
+new_case selectiveoverlay; mkdir -p "$R/_ser8/.config/hypr" "$R/_inactive"; printf base > "$R/.bashrc"; printf overlay > "$R/_ser8/.config/hypr/input.lua"; printf inactive > "$R/_inactive/file"; printf '\n[selectors]\nhost = "printf ser8"\n' >> "$R/dots.toml"; run apply .config/hypr/input.lua > "$TMP/out"; ok test "$(readlink "$H/.config/hypr/input.lua")" = "$R/_ser8/.config/hypr/input.lua"; if run apply _inactive/file > "$TMP/out" 2>&1; then exit 1; fi; ok grep -q 'path is not managed' "$TMP/out"; done_case
+
+new_case selectiveatomic; mkdir -p "$R/.config/nvim"; printf init > "$R/.config/nvim/init.lua"; printf '\n[".config/nvim"]\n' >> "$R/dots.toml"; run apply .config/nvim > "$TMP/out"; ok test -L "$H/.config/nvim"; if run apply .config/nvim/init.lua > "$TMP/out" 2>&1; then exit 1; fi; ok grep -q "part of atomic directory '.config/nvim'" "$TMP/out"; done_case
+
+new_case selectiveerror; printf a > "$R/a"; printf '\n[selectors]\nrole = "false"\n' >> "$R/dots.toml"; if run apply a > "$TMP/out" 2>&1; then exit 1; fi; ok test ! -e "$H/a"; done_case
+
 new_case nested; mkdir -p "$R/.config/app"; printf x > "$R/.config/app/config"; run apply >/dev/null; ok test -L "$H/.config/app/config"; done_case
 
 new_case atomic; mkdir -p "$R/.config/nvim/lua"; printf x > "$R/.config/nvim/lua/init.lua"; printf '\n[".config/nvim"]\n' >> "$R/dots.toml"; run apply >/dev/null; ok test -L "$H/.config/nvim"; ok test ! -L "$H/.config/nvim/lua/init.lua"; done_case
