@@ -22,6 +22,12 @@ new_case default; printf x > "$R/.bashrc"; run apply >/dev/null; ok test -L "$H/
 # repository must therefore be able to build and render its desired state.
 new_case empty; run status > "$TMP/out"; ok grep -q '^dots  ' "$TMP/out"; run apply > "$TMP/out"; ok grep -q '0 created, 0 unchanged, 0 conflicts' "$TMP/out"; printf '\n[selectors]\n' >> "$R/dots.toml"; run status > "$TMP/out"; ok grep -q '^dots  ' "$TMP/out"; done_case
 
+# Empty local apply_paths must produce zero arguments on Bash 3.2, including
+# the observed `apply --force` invocation.
+new_case emptyforce; run apply --force > "$TMP/out"; ok grep -q '0 created, 0 unchanged, 0 conflicts' "$TMP/out"; done_case
+
+new_case forcepaths; printf one > "$R/one"; printf two > "$R/two"; printf spaced > "$R/a b"; printf glob > "$R/[x]*"; printf user > "$H/one"; printf user > "$H/two"; printf user > "$H/a b"; printf user > "$H/[x]*"; run apply --force one >/dev/null; ok test -L "$H/one"; run apply --force two 'a b' '[x]*' >/dev/null; ok test -L "$H/two"; ok test -L "$H/a b"; ok test -L "$H/[x]*"; done_case
+
 new_case selective; printf a > "$R/.bashrc"; mkdir -p "$R/.config/git"; printf b > "$R/.config/git/config"; run apply .bashrc > "$TMP/out"; ok test -L "$H/.bashrc"; ok test ! -e "$H/.config/git/config"; ok grep -q '.bashrc' "$TMP/out"; if grep -q '.config/git/config' "$TMP/out"; then exit 1; fi; run apply .config/git/config .bashrc .config/git/config > "$TMP/out"; ok test -L "$H/.config/git/config"; ok grep -q '1 created, 1 unchanged' "$TMP/out"; done_case
 
 new_case selectiveforce; printf a > "$R/a"; printf b > "$R/b"; printf user-a > "$H/a"; printf user-b > "$H/b"; run apply --force a > "$TMP/out"; ok test -L "$H/a"; ok grep -q user-b "$H/b"; ok grep -q '1 created, 0 unchanged, 0 conflicts' "$TMP/out"; done_case

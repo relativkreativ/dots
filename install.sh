@@ -15,12 +15,12 @@ EOF
 expand_home() { case $1 in '~') printf '%s' "$HOME";; '~/'*) printf '%s/%s' "$HOME" "${1:2}";; *) printf '%s' "$1";; esac; }
 path_has_dir() {
   local item canonical; IFS=: read -r -a _path_parts <<< "${PATH:-}"
-  for item in "${_path_parts[@]}"; do
+  if [[ ${_path_parts[@]+_} ]]; then for item in "${_path_parts[@]}"; do
     [[ -n $item ]] || item=.
     [[ -d $item ]] || continue
     canonical=$(cd "$item" && pwd -P)
     [[ $canonical == "$BIN_DIR" ]] && return 0
-  done
+  done; fi
   return 1
 }
 
