@@ -241,6 +241,17 @@ add_entry() {
   ESOURCE+=("$physical"); ESOURCE_LAYER+=("$layer"); ELOGICAL+=("$logical"); ETARGET+=("$t"); ESTRATEGY+=("$st"); ETYPE+=("$ty")
 }
 under_explicit() { local p=$1 x; (( ${#CFG_SOURCE[@]} )) || return 1; for x in "${CFG_SOURCE[@]}"; do [[ $p == "$x" || $p == "$x/"* ]] && return 0; done; return 1; }
+exists_in_inactive_overlay() {
+  local logical=$1 root
+  # Active layers have already been checked by build_desired.  Here we only
+  # establish that an otherwise missing configured source is real repository
+  # content for another machine, rather than a manifest mistake.
+  for root in "$REPO"/_*; do
+    [[ -d $root && ! -L $root ]] || continue
+    [[ -e $root/$logical || -L $root/$logical ]] && return 0
+  done
+  return 1
+}
 build_desired() {
   local i s t st p ty root logical source layer source_type seen_type
   [[ ${BUILD_SKIP_SELECTORS:-} == 1 ]] || evaluate_selectors
@@ -282,6 +293,7 @@ build_desired() {
     done
     if [[ -z $source ]]; then
       [[ ${DEVOUR_ALLOW_MISSING:-} == "$s" ]] && continue
+      exists_in_inactive_overlay "$s" && continue
       die "source does not exist: $s"
     fi
     if [[ -d $source && ! -L $source ]]; then ty=dir; else ty=file; fi

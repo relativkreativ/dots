@@ -62,6 +62,12 @@ new_case atomicoverlay; mkdir -p "$R/.config/nvim" "$R/_ser8/.config/nvim"; prin
 
 new_case copyoverlay; printf base > "$R/file"; mkdir -p "$R/_workstation"; printf role > "$R/_workstation/file"; printf '\n[selectors]\nrole = "printf WorkStation"\n\n["file"]\nstrategy = "copy"\n' >> "$R/dots.toml"; run apply >/dev/null; ok grep -q role "$H/file"; done_case
 
+new_case inactiveconfigured; mkdir -p "$R/_omarchy/.config/omarchy"; printf omavnc > "$R/_omarchy/.config/omarchy/omavnc.json"; printf '\n[selectors]\ndistro = "printf $DOTS_TEST_DISTRO"\n\n[".config/omarchy/omavnc.json"]\nstrategy = "hardlink"\n' >> "$R/dots.toml"; export DOTS_TEST_DISTRO=omarchy; run apply >/dev/null; ok same_inode "$R/_omarchy/.config/omarchy/omavnc.json" "$H/.config/omarchy/omavnc.json"; H=$TMP/home-inactiveconfigured-macos; mkdir "$H"; DOTS_TEST_DISTRO=macos run status > "$TMP/out"; if grep -q '.config/omarchy/omavnc.json' "$TMP/out"; then exit 1; fi; unset DOTS_TEST_DISTRO; done_case
+
+new_case inactiveconfigureddir; mkdir -p "$R/_omarchy/.config/omarchy"; printf config > "$R/_omarchy/.config/omarchy/config"; printf '\n[selectors]\ndistro = "printf $DOTS_TEST_DISTRO"\n\n[".config/omarchy"]\nstrategy = "copy"\n' >> "$R/dots.toml"; export DOTS_TEST_DISTRO=omarchy; run apply >/dev/null; ok cmp -s "$R/_omarchy/.config/omarchy/config" "$H/.config/omarchy/config"; H=$TMP/home-inactiveconfigureddir-macos; mkdir "$H"; DOTS_TEST_DISTRO=macos run status > "$TMP/out"; if grep -q '.config/omarchy' "$TMP/out"; then exit 1; fi; unset DOTS_TEST_DISTRO; done_case
+
+new_case configuredmissing; printf '\n[".config/missing"]\nstrategy = "hardlink"\n' >> "$R/dots.toml"; if run status > "$TMP/out" 2>&1; then exit 1; fi; ok grep -q 'source does not exist: .config/missing' "$TMP/out"; done_case
+
 new_case emptyselector; printf base > "$R/file"; mkdir -p "$R/_workstation"; printf over > "$R/_workstation/file"; printf '\n[selectors]\nrole = "true"\n' >> "$R/dots.toml"; run apply >/dev/null; ok test "$(readlink "$H/file")" = "$R/file"; done_case
 
 new_case normalized; mkdir -p "$R/_macos" "$R/_fedora" "$R/_ser8"; printf mac > "$R/_macos/mac"; printf fedora > "$R/_fedora/distro"; printf host > "$R/_ser8/host"; printf '\n[selectors]\nos = "printf MACOS"\ndistro = "printf FEDORA"\nhost = "printf SER8"\n' >> "$R/dots.toml"; run apply >/dev/null; ok test "$(readlink "$H/mac")" = "$R/_macos/mac"; ok test "$(readlink "$H/distro")" = "$R/_fedora/distro"; ok test "$(readlink "$H/host")" = "$R/_ser8/host"; done_case
