@@ -120,6 +120,27 @@ Strategies are `symlink` (default), file-only `hardlink`, and `copy`.
 Symlinks point directly to the physical winning source; no rendered trees or
 templates exist. `apply` skips conflicts unless explicitly forced.
 
+## Importing an existing file
+
+`dots devour <path>` safely brings one existing, unmanaged regular file from
+`$HOME` into the repository and immediately deploys it with the normal
+strategy. The path is always `$HOME`-relative:
+
+```bash
+dots devour .config/foo/config
+```
+
+To import into the overlay selected by a selector name, use `--overlay`. This
+uses the selector's normalized current value, rather than accepting a machine
+specific overlay name directly:
+
+```bash
+dots devour .config/foo/config --overlay host
+```
+
+`devour` refuses already managed paths, repository destinations that already
+exist, directories and symlinks, and files within atomic managed directories.
+
 > The repository mirrors `$HOME`. Files are symlinked by default.
 > `dots.toml` describes exceptions. Selectors activate sparse overlays for
 > machine-specific differences.

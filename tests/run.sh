@@ -96,6 +96,20 @@ new_case overlap; mkdir -p "$R/tree"; printf x > "$R/tree/file"; printf '\n["tre
 
 new_case remove; printf x > "$R/file"; run apply >/dev/null; run remove file >/dev/null; ok test ! -e "$H/file"; printf user > "$H/file"; if run remove file >/dev/null 2>&1; then exit 1; fi; done_case
 
+new_case devour; mkdir -p "$H/.config/foo"; printf 'user contents\n' > "$H/.config/foo/config"; chmod 640 "$H/.config/foo/config"; run devour .config/foo/config > "$TMP/out"; ok test -f "$R/.config/foo/config"; ok cmp -s "$R/.config/foo/config" "$H/.config/foo/config"; ok test -L "$H/.config/foo/config"; ok test "$(readlink "$H/.config/foo/config")" = "$R/.config/foo/config"; ok test "$(stat -c '%a' "$R/.config/foo/config")" = 640; ok grep -q 'dots devour' "$TMP/out"; done_case
+
+new_case devouroverlay; mkdir -p "$H/.config/foo"; printf host > "$H/.config/foo/config"; printf '\n[selectors]\nhost = "printf SER8"\nos = "printf LINUX"\n' >> "$R/dots.toml"; run devour .config/foo/config --overlay host >/dev/null; ok test "$(readlink "$H/.config/foo/config")" = "$R/_ser8/.config/foo/config"; mkdir -p "$H/.config/bar"; printf os > "$H/.config/bar/config"; run devour .config/bar/config -o os >/dev/null; ok test "$(readlink "$H/.config/bar/config")" = "$R/_linux/.config/bar/config"; done_case
+
+new_case devourstrategies; printf hard > "$H/hard"; printf '\n["hard"]\nstrategy = "hardlink"\n' >> "$R/dots.toml"; run devour hard >/dev/null; ok same_inode "$R/hard" "$H/hard"; printf copy > "$H/copy"; printf '\n["copy"]\nstrategy = "copy"\n' >> "$R/dots.toml"; run devour copy >/dev/null; ok test ! -L "$H/copy"; ok cmp -s "$R/copy" "$H/copy"; done_case
+
+new_case devourreject; printf managed > "$R/managed"; printf source > "$H/managed"; if run devour managed > "$TMP/out" 2>&1; then exit 1; fi; ok grep -q 'already managed' "$TMP/out"; ok grep -q source "$H/managed"; printf repo > "$R/existing"; printf source > "$H/existing"; if run devour existing > "$TMP/out" 2>&1; then exit 1; fi; ok test -f "$H/existing"; if run devour /absolute > "$TMP/out" 2>&1; then exit 1; fi; if run devour ../escape > "$TMP/out" 2>&1; then exit 1; fi; if run devour missing > "$TMP/out" 2>&1; then exit 1; fi; ln -s nowhere "$H/link"; if run devour link > "$TMP/out" 2>&1; then exit 1; fi; ok grep -q 'is a symlink' "$TMP/out"; mkdir "$H/directory"; if run devour directory > "$TMP/out" 2>&1; then exit 1; fi; if run devour dots.toml > "$TMP/out" 2>&1; then exit 1; fi; mkdir -p "$H/_ser8"; printf source > "$H/_ser8/file"; if run devour _ser8/file > "$TMP/out" 2>&1; then exit 1; fi; ok test -f "$H/_ser8/file"; done_case
+
+new_case devourcopyfailure; mkdir -p "$H/.config/foo"; printf source > "$H/.config/foo/config"; printf not-a-directory > "$R/.config"; if run devour .config/foo/config > "$TMP/out" 2>&1; then exit 1; fi; ok test -f "$H/.config/foo/config"; ok grep -q source "$H/.config/foo/config"; done_case
+
+new_case devourselectorreject; printf source > "$H/file"; printf '\n[selectors]\nhost = "true"\n' >> "$R/dots.toml"; if run devour file --overlay unknown > "$TMP/out" 2>&1; then exit 1; fi; ok grep -q 'unknown selector' "$TMP/out"; ok test -f "$H/file"; if run devour file --overlay host > "$TMP/out" 2>&1; then exit 1; fi; ok grep -q 'empty value' "$TMP/out"; printf '\nbroken = "false"\n' >> "$R/dots.toml"; if run devour file --overlay broken > "$TMP/out" 2>&1; then exit 1; fi; ok test -f "$H/file"; done_case
+
+new_case devouratomic; mkdir -p "$R/.config/nvim" "$H/.config/nvim"; printf init > "$R/.config/nvim/init.lua"; printf user > "$H/.config/nvim/foo.lua"; printf '\n[".config/nvim"]\n' >> "$R/dots.toml"; if run devour .config/nvim/foo.lua > "$TMP/out" 2>&1; then exit 1; fi; ok grep -q 'atomic directory' "$TMP/out"; ok test -f "$H/.config/nvim/foo.lua"; done_case
+
 new_case ui; printf x > "$R/file"; NO_COLOR=1 run status > "$TMP/out"; ok test ! -s <(grep $'\033' "$TMP/out" || true); done_case
 
 # Discovery is tested from a neutral working directory so it cannot accidentally

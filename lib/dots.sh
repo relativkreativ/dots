@@ -24,6 +24,8 @@ Commands:
   apply [--force] [path ...]
                   Create selected deployments; without paths, apply all.
   remove <path>   Remove a deployment only when it still matches its source.
+  devour <path> [--overlay <selector>]
+                  Import an unmanaged HOME file and deploy it.
 
 Options:
   --repo <path>   Use a specific dotfiles repository.
@@ -32,7 +34,7 @@ Repository discovery, in order: --repo; the current directory when it contains
 dots.toml; DOTS_REPO; then ~/.dotfiles. DOTS_REPO supplies the default
 repository location and does not override a dots.toml in the current directory.
 DOTS_HOME overrides HOME only as a deployment target, primarily for testing.
-Apply paths are logical HOME-relative paths (for example, .config/nvim), not
+Apply and devour paths are logical HOME-relative paths (for example, .config/nvim), not
 repository or overlay paths.
 EOF
 }
@@ -234,7 +236,8 @@ add_entry() {
 under_explicit() { local p=$1 x; for x in "${CFG_SOURCE[@]}"; do [[ $p == "$x" || $p == "$x/"* ]] && return 0; done; return 1; }
 build_desired() {
   local i s t st p ty root logical source layer source_type seen_type
-  evaluate_selectors
+  [[ ${BUILD_SKIP_SELECTORS:-} == 1 ]] || evaluate_selectors
+  ESOURCE=(); ESOURCE_LAYER=(); ELOGICAL=(); ETARGET=(); ESTRATEGY=(); ETYPE=()
   LAYER_ROOT=("$REPO"); LAYER_LABEL=(base)
   for i in "${!SELECTOR_NAME[@]}"; do
     [[ -n ${SELECTOR_VALUE[i]} ]] || continue
@@ -268,7 +271,10 @@ build_desired() {
       [[ -z $seen_type || $seen_type == "$source_type" ]] || die "file/directory type conflict at '$s'"
       seen_type=$source_type; source=$root/$s
     done
-    [[ -n $source ]] || die "source does not exist: $s"
+    if [[ -z $source ]]; then
+      [[ ${DEVOUR_ALLOW_MISSING:-} == "$s" ]] && continue
+      die "source does not exist: $s"
+    fi
     if [[ -d $source && ! -L $source ]]; then ty=dir; else ty=file; fi
     add_entry "$source" "$s" "$t" "$st" "$ty"
   done
@@ -355,7 +361,7 @@ replace_target() { local dst=$1; if [[ -L $dst || -f $dst ]]; then rm "$dst"; el
 apply_one() {
   local i=$1 src=${ESOURCE[i]} dst=$TARGET_HOME/${ETARGET[i]} st=${ESTRATEGY[i]}
   ensure_parent "$dst"
-  case $st in symlink) ln -s "$src" "$dst";; hardlink) ln "$src" "$dst" || die "cannot hardlink '${ESOURCE[i]}' (possibly different filesystems)";; copy) if [[ ${ETYPE[i]} == dir ]]; then cp -R "$src" "$dst"; else cp "$src" "$dst"; fi;; esac
+  case $st in symlink) ln -s "$src" "$dst";; hardlink) ln "$src" "$dst";; copy) if [[ ${ETYPE[i]} == dir ]]; then cp -R "$src" "$dst"; else cp "$src" "$dst"; fi;; esac
 }
 render_status() {
   local i shown=0; printf '%sdots  %s%s\n' "$C_DIM" "$(display_repo)" "$C_RESET"
@@ -402,8 +408,8 @@ cmd_apply() {
   printf '%s\n\n' "${C_BOLD}dots apply${C_RESET}"
   for i in "${APPLY_INDEX[@]}"; do inspect_entry "$i"; case $INSPECT in
     correct) ((++unchanged)); printf '%s %s\n' "$(mark "$C_OK" '✓')" "${ETARGET[i]}";;
-    missing) apply_one "$i"; ((++created)); printf '%s %s %s %s\n' "$(mark "$C_ADD" '+')" "${ETARGET[i]}" "${C_DIM}→${C_RESET}" "${ESTRATEGY[i]}";;
-    conflict) if (( force )); then ensure_parent "$TARGET_HOME/${ETARGET[i]}"; replace_target "$TARGET_HOME/${ETARGET[i]}"; apply_one "$i"; ((++created)); printf '%s %s %s %s %s\n' "$(mark "$C_ADD" '~')" "${ETARGET[i]}" "${C_DIM}→${C_RESET}" "${ESTRATEGY[i]}" "${C_WARN}(replaced)${C_RESET}"; else ((++conflicts)); printf '%s %s  %s\n' "$(mark "$C_ERR" '!')" "${ETARGET[i]}" "${C_ERR}$(conflict_label "$INSPECT_REASON")${C_RESET}"; fi;;
+    missing) apply_one "$i" || { [[ ${ESTRATEGY[i]} != hardlink ]] || die "cannot hardlink '${ESOURCE[i]}' (possibly different filesystems)"; die "cannot deploy '${ETARGET[i]}'"; }; ((++created)); printf '%s %s %s %s\n' "$(mark "$C_ADD" '+')" "${ETARGET[i]}" "${C_DIM}→${C_RESET}" "${ESTRATEGY[i]}";;
+    conflict) if (( force )); then ensure_parent "$TARGET_HOME/${ETARGET[i]}"; replace_target "$TARGET_HOME/${ETARGET[i]}"; apply_one "$i" || { [[ ${ESTRATEGY[i]} != hardlink ]] || die "cannot hardlink '${ESOURCE[i]}' (possibly different filesystems)"; die "cannot deploy '${ETARGET[i]}'"; }; ((++created)); printf '%s %s %s %s %s\n' "$(mark "$C_ADD" '~')" "${ETARGET[i]}" "${C_DIM}→${C_RESET}" "${ESTRATEGY[i]}" "${C_WARN}(replaced)${C_RESET}"; else ((++conflicts)); printf '%s %s  %s\n' "$(mark "$C_ERR" '!')" "${ETARGET[i]}" "${C_ERR}$(conflict_label "$INSPECT_REASON")${C_RESET}"; fi;;
   esac; done
   printf '\n%s created, %s unchanged, %s conflict%s\n' "$created" "$unchanged" "$conflicts" "$([[ $conflicts == 1 ]] || printf s)"
   (( conflicts == 0 ))
@@ -413,6 +419,75 @@ cmd_remove() {
   valid_relpath "$wanted" || die "unsafe path '$wanted'"
   for i in "${!ESOURCE[@]}"; do [[ ${ETARGET[i]} == "$wanted" ]] || continue; found=1; inspect_entry "$i"; [[ $INSPECT == correct ]] || die "refusing to remove '$wanted': target is not the expected deployment"; ensure_parent "$TARGET_HOME/$wanted"; replace_target "$TARGET_HOME/$wanted"; printf '%s %s\n' "$(mark "$C_ADD" '−')" "$wanted"; done
   (( found )) || die "'$wanted' is not a managed target"
+}
+devour_repo_parent() {
+  local dst=$1 rel=${1#"$REPO/"} parent_rel part current=$REPO
+  [[ $dst == "$REPO/"* ]] || die "internal error: repository destination escapes repository"
+  parent_rel=${rel%/*}
+  [[ $parent_rel == "$rel" ]] && return
+  IFS=/ read -r -a _parts <<< "$parent_rel"
+  for part in "${_parts[@]}"; do
+    [[ -n $part ]] || continue
+    current=$current/$part
+    if [[ -L $current ]]; then die "refusing repository destination beneath symlinked parent: $current"; fi
+    if [[ -e $current ]]; then [[ -d $current ]] || die "repository destination parent is not a directory: $current"; else mkdir "$current"; fi
+  done
+}
+devour_reject_path() {
+  local p=$1 first
+  valid_relpath "$p" || die "unsafe logical path '$p'"
+  case $p in dots.toml|dots.toml/*|.git|.git/*|.gitignore) die "repository metadata cannot be devoured: $p";; esac
+  first=${p%%/*}
+  [[ $p != "$first"/* || $first != _* ]] || die "top-level overlay path cannot be devoured: $p"
+}
+devour_entry_for_logical() {
+  local wanted=$1 i
+  for i in "${!ELOGICAL[@]}"; do [[ ${ELOGICAL[i]} == "$wanted" ]] && { DEVOUR_ENTRY=$i; return 0; }; done
+  return 1
+}
+devour_atomic_check() {
+  local wanted=$1 i
+  for i in "${!ELOGICAL[@]}"; do
+    [[ ${ETYPE[i]} == dir && $wanted == "${ELOGICAL[i]}/"* ]] || continue
+    die "'$wanted' is part of atomic directory '${ELOGICAL[i]}'\n       '${ELOGICAL[i]}' is the managed deployment unit"
+  done
+}
+cmd_devour() {
+  local logical=$1 selector=${2:-} source destination layer=base i
+  devour_reject_path "$logical"
+  if [[ -n $selector ]]; then
+    selector_index_for "$selector" || die "unknown selector '$selector'"
+    i=$SELECTOR_LOOKUP
+    [[ -n ${SELECTOR_VALUE[i]} ]] || die "selector '$selector' resolved to an empty value; no overlay is available"
+    layer=_${SELECTOR_VALUE[i]}
+  fi
+  source=$TARGET_HOME/$logical
+  [[ -L $source ]] && die "'$logical' is a symlink\n       devour currently supports regular files only"
+  [[ -e $source ]] || die "'$logical' does not exist under HOME"
+  [[ -f $source ]] || die "'$logical' is not a regular file\n       devour currently supports regular files only"
+  devour_entry_for_logical "$logical" && die "'$logical' is already managed by dots"
+  devour_atomic_check "$logical"
+  if [[ $layer == base ]]; then destination=$REPO/$logical; else destination=$REPO/$layer/$logical; fi
+  [[ ! -e $destination && ! -L $destination ]] || die "repository destination already exists: $destination"
+  devour_repo_parent "$destination"
+  cp -p "$source" "$destination" || die "could not copy '$logical' into repository"
+  # Rebuild through the ordinary resolver so the newly imported file gets its
+  # manifest strategy, overlay precedence, and normal deployment behavior.
+  DEVOUR_ALLOW_MISSING=
+  BUILD_SKIP_SELECTORS=1 build_desired
+  devour_entry_for_logical "$logical" || die "imported path did not enter desired state: $logical"
+  i=$DEVOUR_ENTRY
+  rm "$source"
+  inspect_entry "$i"
+  if [[ $INSPECT != missing ]] || ! apply_one "$i"; then
+    [[ $INSPECT != missing ]] || cp -p "$destination" "$source" || warn "could not restore '$logical' after deployment failure"
+    die "could not deploy '$logical' after import"
+  fi
+  inspect_entry "$i"
+  [[ $INSPECT == correct ]] || { cp -p "$destination" "$source" || warn "could not restore '$logical' after verification failure"; die "deployment verification failed for '$logical'"; }
+  printf '%s\n\n' "${C_BOLD}dots devour${C_RESET}"
+  printf '%s %s %s %s\n' "$(mark "$C_ADD" '+')" "$logical" "${C_DIM}→${C_RESET}" "$layer"
+  printf '%s %s %s %s\n' "$(mark "$C_OK" '✓')" "$logical" "${C_DIM}→${C_RESET}" "${ESTRATEGY[i]}"
 }
 dots_main() {
   init_ui
@@ -427,9 +502,20 @@ dots_main() {
   done
   [[ ${#args[@]} -gt 0 ]] || { usage >&2; exit 2; }
   command=${args[0]}; set -- "${args[@]:1}"
-  case $command in status|apply|remove) ;; *) usage >&2; exit 2;; esac
+  case $command in status|apply|remove|devour) ;; *) usage >&2; exit 2;; esac
   find_repo; TARGET_HOME=${DOTS_HOME:-${HOME:?HOME is not set}}; [[ -d $TARGET_HOME ]] || die "home directory does not exist: $TARGET_HOME"; TARGET_HOME=$(cd "$TARGET_HOME" && pwd -P)
-  parse_manifest; build_desired
+  parse_manifest
+  # A manifest may predeclare the strategy for the file being imported. Allow
+  # just that not-yet-present source during the pre-import desired-state pass.
+  if [[ $command == devour ]]; then
+    local devour_next_is_selector=0
+    for arg in "$@"; do
+      if (( devour_next_is_selector )); then devour_next_is_selector=0; continue; fi
+      case $arg in --overlay|-o) devour_next_is_selector=1;; --*) ;; *) DEVOUR_ALLOW_MISSING=$arg; break;; esac
+    done
+  fi
+  build_desired
+  DEVOUR_ALLOW_MISSING=
   case $command in
     status) [[ $# == 0 ]] || die 'status takes no arguments'; render_status ;;
     apply)
@@ -445,5 +531,17 @@ dots_main() {
       cmd_apply "$force" "${apply_paths[@]}"
       ;;
     remove) [[ $# == 1 ]] || die 'usage: dots remove <path>'; cmd_remove "$1" ;;
+    devour)
+      local logical= overlay= arg
+      while [[ $# -gt 0 ]]; do
+        case $1 in
+          --overlay|-o) [[ $# -ge 2 ]] || die "$1 requires a selector name"; [[ -z $overlay ]] || die '--overlay may only be specified once'; overlay=$2; shift 2 ;;
+          --*) die "unknown devour option: $1" ;;
+          *) [[ -z $logical ]] || die 'usage: dots devour <path> [--overlay <selector>]'; logical=$1; shift ;;
+        esac
+      done
+      [[ -n $logical ]] || die 'usage: dots devour <path> [--overlay <selector>]'
+      cmd_devour "$logical" "$overlay"
+      ;;
   esac
 }
