@@ -18,6 +18,10 @@ ok test -f "$ROOT/dots.toml.sample"; ok test ! -e "$ROOT/dots.toml"
 
 new_case default; printf x > "$R/.bashrc"; run apply >/dev/null; ok test -L "$H/.bashrc"; ok test "$(readlink "$H/.bashrc")" = "$R/.bashrc"; run apply > "$TMP/out"; ok grep -q '0 created, 1 unchanged' "$TMP/out"; done_case
 
+# Bash 3.2 treats an empty indexed array as unset under `set -u`.  An empty
+# repository must therefore be able to build and render its desired state.
+new_case empty; run status > "$TMP/out"; ok grep -q '^dots  ' "$TMP/out"; run apply > "$TMP/out"; ok grep -q '0 created, 0 unchanged, 0 conflicts' "$TMP/out"; printf '\n[selectors]\n' >> "$R/dots.toml"; run status > "$TMP/out"; ok grep -q '^dots  ' "$TMP/out"; done_case
+
 new_case selective; printf a > "$R/.bashrc"; mkdir -p "$R/.config/git"; printf b > "$R/.config/git/config"; run apply .bashrc > "$TMP/out"; ok test -L "$H/.bashrc"; ok test ! -e "$H/.config/git/config"; ok grep -q '.bashrc' "$TMP/out"; if grep -q '.config/git/config' "$TMP/out"; then exit 1; fi; run apply .config/git/config .bashrc .config/git/config > "$TMP/out"; ok test -L "$H/.config/git/config"; ok grep -q '1 created, 1 unchanged' "$TMP/out"; done_case
 
 new_case selectiveforce; printf a > "$R/a"; printf b > "$R/b"; printf user-a > "$H/a"; printf user-b > "$H/b"; run apply --force a > "$TMP/out"; ok test -L "$H/a"; ok grep -q user-b "$H/b"; ok grep -q '1 created, 0 unchanged, 0 conflicts' "$TMP/out"; done_case

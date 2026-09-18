@@ -117,6 +117,7 @@ default_selectors() {
 }
 selector_index_for() {
   local sought=$1 j
+  (( ${#SELECTOR_NAME[@]} )) || return 1
   for j in "${!SELECTOR_NAME[@]}"; do [[ ${SELECTOR_NAME[j]} == "$sought" ]] && { SELECTOR_LOOKUP=$j; return 0; }; done
   return 1
 }
@@ -130,6 +131,7 @@ add_selector() {
 }
 cfg_index_for() {
   local sought=$1 j
+  (( ${#CFG_SOURCE[@]} )) || return 1
   for j in "${!CFG_SOURCE[@]}"; do [[ ${CFG_SOURCE[j]} == "$sought" ]] && { CFG_LOOKUP=$j; return 0; }; done
   return 1
 }
@@ -197,6 +199,7 @@ parse_manifest() {
 evaluate_selectors() {
   local i j output line value count
   SELECTOR_VALUE=()
+  (( ${#SELECTOR_NAME[@]} )) || return 0
   for i in "${!SELECTOR_NAME[@]}"; do
     output=$(bash -c "${SELECTOR_COMMAND[i]}") || die "selector '${SELECTOR_NAME[i]}' failed"
     value= count=0
@@ -211,9 +214,11 @@ evaluate_selectors() {
       die "selector '${SELECTOR_NAME[i]}' returned invalid value '$value' (allowed characters: a-z, 0-9, ., _, -)"
     fi
     if [[ -n $value ]]; then
-      for j in "${!SELECTOR_VALUE[@]}"; do
-        [[ ${SELECTOR_VALUE[j]} != "$value" ]] || die "selectors '${SELECTOR_NAME[j]}' and '${SELECTOR_NAME[i]}' both resolve to '$value' (overlay directory '_$value' would be ambiguous)"
-      done
+      if (( ${#SELECTOR_VALUE[@]} )); then
+        for j in "${!SELECTOR_VALUE[@]}"; do
+          [[ ${SELECTOR_VALUE[j]} != "$value" ]] || die "selectors '${SELECTOR_NAME[j]}' and '${SELECTOR_NAME[i]}' both resolve to '$value' (overlay directory '_$value' would be ambiguous)"
+        done
+      fi
     fi
     SELECTOR_VALUE+=("$value")
   done
@@ -221,7 +226,7 @@ evaluate_selectors() {
 
 declare -a LAYER_ROOT=() LAYER_LABEL=() ESOURCE=() ESOURCE_LAYER=() ELOGICAL=() ETARGET=() ESTRATEGY=() ETYPE=()
 declare -a RESOLVED_LOGICAL=() RESOLVED_SOURCE=()
-resolved_index_for() { local wanted=$1 j; for j in "${!RESOLVED_LOGICAL[@]}"; do [[ ${RESOLVED_LOGICAL[j]} == "$wanted" ]] && { RESOLVED_LOOKUP=$j; return 0; }; done; return 1; }
+resolved_index_for() { local wanted=$1 j; (( ${#RESOLVED_LOGICAL[@]} )) || return 1; for j in "${!RESOLVED_LOGICAL[@]}"; do [[ ${RESOLVED_LOGICAL[j]} == "$wanted" ]] && { RESOLVED_LOOKUP=$j; return 0; }; done; return 1; }
 set_resolved() { local logical=$1 physical=$2; if resolved_index_for "$logical"; then RESOLVED_SOURCE[RESOLVED_LOOKUP]=$physical; else RESOLVED_LOGICAL+=("$logical"); RESOLVED_SOURCE+=("$physical"); fi; }
 resolved_source_for() { resolved_index_for "$1" && { RESOLVED_RESULT=${RESOLVED_SOURCE[RESOLVED_LOOKUP]}; return 0; }; return 1; }
 add_entry() {
@@ -231,22 +236,24 @@ add_entry() {
   [[ -e $physical || -L $physical ]] || die "source does not exist: $logical"
   [[ $physical == "$REPO/"* ]] || die "source escapes repository: $logical"
   [[ $st != hardlink || $ty == file ]] || die "cannot hardlink directory '$logical'"
-  for existing in "${ETARGET[@]}"; do [[ $existing != "$t" ]] || die "conflicting target definitions for '$t'"; done
-  for i in "${!LAYER_ROOT[@]}"; do [[ $physical == "${LAYER_ROOT[i]}/"* ]] && layer=${LAYER_LABEL[i]}; done
+  if (( ${#ETARGET[@]} )); then for existing in "${ETARGET[@]}"; do [[ $existing != "$t" ]] || die "conflicting target definitions for '$t'"; done; fi
+  if (( ${#LAYER_ROOT[@]} )); then for i in "${!LAYER_ROOT[@]}"; do [[ $physical == "${LAYER_ROOT[i]}/"* ]] && layer=${LAYER_LABEL[i]}; done; fi
   ESOURCE+=("$physical"); ESOURCE_LAYER+=("$layer"); ELOGICAL+=("$logical"); ETARGET+=("$t"); ESTRATEGY+=("$st"); ETYPE+=("$ty")
 }
-under_explicit() { local p=$1 x; for x in "${CFG_SOURCE[@]}"; do [[ $p == "$x" || $p == "$x/"* ]] && return 0; done; return 1; }
+under_explicit() { local p=$1 x; (( ${#CFG_SOURCE[@]} )) || return 1; for x in "${CFG_SOURCE[@]}"; do [[ $p == "$x" || $p == "$x/"* ]] && return 0; done; return 1; }
 build_desired() {
   local i s t st p ty root logical source layer source_type seen_type
   [[ ${BUILD_SKIP_SELECTORS:-} == 1 ]] || evaluate_selectors
   ESOURCE=(); ESOURCE_LAYER=(); ELOGICAL=(); ETARGET=(); ESTRATEGY=(); ETYPE=()
   LAYER_ROOT=("$REPO"); LAYER_LABEL=(base)
-  for i in "${!SELECTOR_NAME[@]}"; do
-    [[ -n ${SELECTOR_VALUE[i]} ]] || continue
-    root=$REPO/_${SELECTOR_VALUE[i]}
-    [[ -d $root && ! -L $root ]] || continue
-    LAYER_ROOT+=("$root"); LAYER_LABEL+=("_${SELECTOR_VALUE[i]}")
-  done
+  if (( ${#SELECTOR_NAME[@]} )); then
+    for i in "${!SELECTOR_NAME[@]}"; do
+      [[ -n ${SELECTOR_VALUE[i]} ]] || continue
+      root=$REPO/_${SELECTOR_VALUE[i]}
+      [[ -d $root && ! -L $root ]] || continue
+      LAYER_ROOT+=("$root"); LAYER_LABEL+=("_${SELECTOR_VALUE[i]}")
+    done
+  fi
   RESOLVED_LOGICAL=(); RESOLVED_SOURCE=()
   for layer in "${!LAYER_ROOT[@]}"; do
     root=${LAYER_ROOT[layer]}
@@ -261,7 +268,7 @@ build_desired() {
   done
   validate_resolved_hierarchy
   sort_resolved
-  for i in "${!CFG_SOURCE[@]}"; do
+  if (( ${#CFG_SOURCE[@]} )); then for i in "${!CFG_SOURCE[@]}"; do
     s=${CFG_SOURCE[i]}; t=${CFG_TARGET[i]}; st=${CFG_STRATEGY[i]:-$DEFAULT_STRATEGY}
     [[ $s != .gitignore ]] || die "repository metadata cannot be managed: .gitignore"
     [[ $s == */* || $s != _* || ! -d $REPO/$s ]] || die "top-level overlay directory '$s' cannot be a managed entry"
@@ -279,16 +286,17 @@ build_desired() {
     fi
     if [[ -d $source && ! -L $source ]]; then ty=dir; else ty=file; fi
     add_entry "$source" "$s" "$t" "$st" "$ty"
-  done
-  for i in "${!RESOLVED_LOGICAL[@]}"; do
+  done; fi
+  if (( ${#RESOLVED_LOGICAL[@]} )); then for i in "${!RESOLVED_LOGICAL[@]}"; do
     logical=${RESOLVED_LOGICAL[i]}; under_explicit "$logical" && continue
     add_entry "${RESOLVED_SOURCE[i]}" "$logical" "$logical" "$DEFAULT_STRATEGY" file
-  done
+  done; fi
   validate_target_hierarchy
 }
 
 sort_resolved() {
   local i j temp
+  (( ${#RESOLVED_LOGICAL[@]} )) || return 0
   for ((i = 0; i < ${#RESOLVED_LOGICAL[@]}; i++)); do
     for ((j = i + 1; j < ${#RESOLVED_LOGICAL[@]}; j++)); do
       [[ ${RESOLVED_LOGICAL[j]} < ${RESOLVED_LOGICAL[i]} ]] || continue
@@ -300,6 +308,7 @@ sort_resolved() {
 
 validate_resolved_hierarchy() {
   local i j a b
+  (( ${#RESOLVED_LOGICAL[@]} )) || return 0
   for i in "${!RESOLVED_LOGICAL[@]}"; do
     a=${RESOLVED_LOGICAL[i]}
     for j in "${!RESOLVED_LOGICAL[@]}"; do
@@ -312,6 +321,7 @@ validate_resolved_hierarchy() {
 
 validate_target_hierarchy() {
   local i j
+  (( ${#ETARGET[@]} )) || return 0
   for i in "${!ETARGET[@]}"; do
     [[ ${ETYPE[i]} == dir ]] || continue
     for j in "${!ETARGET[@]}"; do
@@ -367,40 +377,40 @@ apply_one() {
 }
 render_status() {
   local i shown=0; printf '%sdots  %s%s\n' "$C_DIM" "$(display_repo)" "$C_RESET"
-  for i in "${!SELECTOR_NAME[@]}"; do [[ -n ${SELECTOR_VALUE[i]} ]] || continue; ((++shown)); done
+  if (( ${#SELECTOR_NAME[@]} )); then for i in "${!SELECTOR_NAME[@]}"; do [[ -n ${SELECTOR_VALUE[i]} ]] || continue; ((++shown)); done; fi
   if (( shown )); then
     printf '%sSelectors%s\n' "$C_DIM" "$C_RESET"
-    for i in "${!SELECTOR_NAME[@]}"; do [[ -n ${SELECTOR_VALUE[i]} ]] || continue; printf '  %-12s %s\n' "${SELECTOR_NAME[i]}" "${SELECTOR_VALUE[i]}"; done
+    if (( ${#SELECTOR_NAME[@]} )); then for i in "${!SELECTOR_NAME[@]}"; do [[ -n ${SELECTOR_VALUE[i]} ]] || continue; printf '  %-12s %s\n' "${SELECTOR_NAME[i]}" "${SELECTOR_VALUE[i]}"; done; fi
   fi
   printf '\n'
-  for i in "${!ESOURCE[@]}"; do inspect_entry "$i"; case $INSPECT in correct) printf '%s  %s\n' "$(mark "$C_OK" '✓')" "${ETARGET[i]}";; missing) printf '%s  %s  %s\n' "$(mark "$C_ADD" '→')" "${ETARGET[i]}" "${C_DIM}missing${C_RESET}";; conflict) printf '%s  %s  %s\n' "$(mark "$C_ERR" '!')" "${ETARGET[i]}" "${C_ERR}$(conflict_label "$INSPECT_REASON")${C_RESET}";; esac; done
+  if (( ${#ESOURCE[@]} )); then for i in "${!ESOURCE[@]}"; do inspect_entry "$i"; case $INSPECT in correct) printf '%s  %s\n' "$(mark "$C_OK" '✓')" "${ETARGET[i]}";; missing) printf '%s  %s  %s\n' "$(mark "$C_ADD" '→')" "${ETARGET[i]}" "${C_DIM}missing${C_RESET}";; conflict) printf '%s  %s  %s\n' "$(mark "$C_ERR" '!')" "${ETARGET[i]}" "${C_ERR}$(conflict_label "$INSPECT_REASON")${C_RESET}";; esac; done; fi
 }
 declare -a APPLY_INDEX=()
 select_apply_entries() {
   local requested selected i j atomic
   APPLY_INDEX=()
-  [[ $# -gt 0 ]] || { APPLY_INDEX=("${!ESOURCE[@]}"); return; }
+  [[ $# -gt 0 ]] || { if (( ${#ESOURCE[@]} )); then APPLY_INDEX=("${!ESOURCE[@]}"); fi; return; }
   for requested in "$@"; do
     valid_relpath "$requested" || die "unsafe path selector: $requested"
     selected=
-    for i in "${!ETARGET[@]}"; do
+    if (( ${#ETARGET[@]} )); then for i in "${!ETARGET[@]}"; do
       [[ ${ETARGET[i]} == "$requested" ]] && { selected=$i; break; }
-    done
+    done; fi
     if [[ -z $selected ]]; then
-      for i in "${!ETARGET[@]}"; do
+      if (( ${#ETARGET[@]} )); then for i in "${!ETARGET[@]}"; do
         [[ ${ETYPE[i]} == dir && $requested == "${ETARGET[i]}/"* ]] || continue
         die "'$requested' is part of atomic directory '${ETARGET[i]}'; apply '${ETARGET[i]}' instead"
-      done
+      done; fi
       die "path is not managed by dots: $requested"
     fi
-    for j in "${APPLY_INDEX[@]}"; do [[ $j != "$selected" ]] || { selected=; break; }; done
+    if (( ${#APPLY_INDEX[@]} )); then for j in "${APPLY_INDEX[@]}"; do [[ $j != "$selected" ]] || { selected=; break; }; done; fi
     [[ -n $selected ]] && APPLY_INDEX+=("$selected")
   done
   # Preserve desired-state ordering, rather than argument or filesystem order.
-  selected=("${APPLY_INDEX[@]}"); APPLY_INDEX=()
-  for i in "${!ESOURCE[@]}"; do
-    for j in "${selected[@]}"; do [[ $i == "$j" ]] && APPLY_INDEX+=("$i"); done
-  done
+  if (( ${#APPLY_INDEX[@]} )); then selected=("${APPLY_INDEX[@]}"); else selected=(); fi; APPLY_INDEX=()
+  if (( ${#ESOURCE[@]} )); then for i in "${!ESOURCE[@]}"; do
+    if (( ${#selected[@]} )); then for j in "${selected[@]}"; do [[ $i == "$j" ]] && APPLY_INDEX+=("$i"); done; fi
+  done; fi
   return 0
 }
 cmd_apply() {
@@ -408,18 +418,18 @@ cmd_apply() {
   shift
   select_apply_entries "$@"
   printf '%s\n\n' "${C_BOLD}dots apply${C_RESET}"
-  for i in "${APPLY_INDEX[@]}"; do inspect_entry "$i"; case $INSPECT in
+  if (( ${#APPLY_INDEX[@]} )); then for i in "${APPLY_INDEX[@]}"; do inspect_entry "$i"; case $INSPECT in
     correct) ((++unchanged)); printf '%s %s\n' "$(mark "$C_OK" '✓')" "${ETARGET[i]}";;
     missing) apply_one "$i" || { [[ ${ESTRATEGY[i]} != hardlink ]] || die "cannot hardlink '${ESOURCE[i]}' (possibly different filesystems)"; die "cannot deploy '${ETARGET[i]}'"; }; ((++created)); printf '%s %s %s %s\n' "$(mark "$C_ADD" '+')" "${ETARGET[i]}" "${C_DIM}→${C_RESET}" "${ESTRATEGY[i]}";;
     conflict) if (( force )); then ensure_parent "$TARGET_HOME/${ETARGET[i]}"; replace_target "$TARGET_HOME/${ETARGET[i]}"; apply_one "$i" || { [[ ${ESTRATEGY[i]} != hardlink ]] || die "cannot hardlink '${ESOURCE[i]}' (possibly different filesystems)"; die "cannot deploy '${ETARGET[i]}'"; }; ((++created)); printf '%s %s %s %s %s\n' "$(mark "$C_ADD" '~')" "${ETARGET[i]}" "${C_DIM}→${C_RESET}" "${ESTRATEGY[i]}" "${C_WARN}(replaced)${C_RESET}"; else ((++conflicts)); printf '%s %s  %s\n' "$(mark "$C_ERR" '!')" "${ETARGET[i]}" "${C_ERR}$(conflict_label "$INSPECT_REASON")${C_RESET}"; fi;;
-  esac; done
+  esac; done; fi
   printf '\n%s created, %s unchanged, %s conflict%s\n' "$created" "$unchanged" "$conflicts" "$([[ $conflicts == 1 ]] || printf s)"
   (( conflicts == 0 ))
 }
 cmd_remove() {
   local wanted=$1 i found=0
   valid_relpath "$wanted" || die "unsafe path '$wanted'"
-  for i in "${!ESOURCE[@]}"; do [[ ${ETARGET[i]} == "$wanted" ]] || continue; found=1; inspect_entry "$i"; [[ $INSPECT == correct ]] || die "refusing to remove '$wanted': target is not the expected deployment"; ensure_parent "$TARGET_HOME/$wanted"; replace_target "$TARGET_HOME/$wanted"; printf '%s %s\n' "$(mark "$C_ADD" '−')" "$wanted"; done
+  if (( ${#ESOURCE[@]} )); then for i in "${!ESOURCE[@]}"; do [[ ${ETARGET[i]} == "$wanted" ]] || continue; found=1; inspect_entry "$i"; [[ $INSPECT == correct ]] || die "refusing to remove '$wanted': target is not the expected deployment"; ensure_parent "$TARGET_HOME/$wanted"; replace_target "$TARGET_HOME/$wanted"; printf '%s %s\n' "$(mark "$C_ADD" '−')" "$wanted"; done; fi
   (( found )) || die "'$wanted' is not a managed target"
 }
 devour_repo_parent() {
@@ -444,11 +454,13 @@ devour_reject_path() {
 }
 devour_entry_for_logical() {
   local wanted=$1 i
+  (( ${#ELOGICAL[@]} )) || return 1
   for i in "${!ELOGICAL[@]}"; do [[ ${ELOGICAL[i]} == "$wanted" ]] && { DEVOUR_ENTRY=$i; return 0; }; done
   return 1
 }
 devour_atomic_check() {
   local wanted=$1 i
+  (( ${#ELOGICAL[@]} )) || return 0
   for i in "${!ELOGICAL[@]}"; do
     [[ ${ETYPE[i]} == dir && $wanted == "${ELOGICAL[i]}/"* ]] || continue
     die "'$wanted' is part of atomic directory '${ELOGICAL[i]}'\n       '${ELOGICAL[i]}' is the managed deployment unit"
@@ -456,6 +468,7 @@ devour_atomic_check() {
 }
 devour_atomic_children_check() {
   local wanted=$1 configured
+  (( ${#CFG_SOURCE[@]} )) || return 0
   for configured in "${CFG_SOURCE[@]}"; do
     [[ $configured == "$wanted/"* ]] || continue
     die "'$wanted' would be an atomic directory containing explicit managed entry '$configured'"
@@ -496,7 +509,7 @@ cmd_devour_directory() {
   (( existing )) || append_atomic_manifest "$logical"
   # Parse the appended table, but retain the already validated selector values
   # so selector evaluation cannot introduce a post-copy surprise.
-  selector_values=("${SELECTOR_VALUE[@]}")
+  if (( ${#SELECTOR_VALUE[@]} )); then selector_values=("${SELECTOR_VALUE[@]}"); fi
   parse_manifest
   SELECTOR_VALUE=("${selector_values[@]}")
   BUILD_SKIP_SELECTORS=1 build_desired
