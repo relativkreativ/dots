@@ -135,6 +135,8 @@ cfg_index_for() {
 }
 parse_manifest() {
   local file=$REPO/dots.toml raw line n=0 section= key value source i defaults_keys= selectors_seen=0 triple_key= triple_value=
+  CFG_SOURCE=(); CFG_TARGET=(); CFG_STRATEGY=(); CFG_KEYS=()
+  SELECTOR_NAME=(); SELECTOR_COMMAND=(); SELECTOR_VALUE=()
   DEFAULT_STRATEGY=symlink
   default_selectors
   [[ -f $file ]] || die "dots.toml is required for repository discovery and metadata"
@@ -452,6 +454,73 @@ devour_atomic_check() {
     die "'$wanted' is part of atomic directory '${ELOGICAL[i]}'\n       '${ELOGICAL[i]}' is the managed deployment unit"
   done
 }
+devour_atomic_children_check() {
+  local wanted=$1 configured
+  for configured in "${CFG_SOURCE[@]}"; do
+    [[ $configured == "$wanted/"* ]] || continue
+    die "'$wanted' would be an atomic directory containing explicit managed entry '$configured'"
+  done
+}
+devour_validate_directory_tree() {
+  local source=$1 unsafe
+  unsafe=$(find -P "$source" \( -type d -o -type f -o -type l \) -o -print -quit)
+  [[ -z $unsafe ]] || die "directory '$source' contains unsupported filesystem object '$unsafe'"
+}
+append_atomic_manifest() {
+  local logical=$1
+  # The parser accepts this exact table syntax. Appending avoids changing any
+  # user-authored comments, whitespace, ordering, or existing tables.
+  printf '\n["%s"]\n' "$logical" >> "$REPO/dots.toml" || die "could not add atomic entry for '$logical' to dots.toml"
+}
+restore_devoured_directory() {
+  local source=$1 destination=$2
+  if [[ -L $source || -e $source ]]; then replace_target "$source"; fi
+  cp -a "$destination" "$source" || warn "could not restore '$source' after deployment failure"
+}
+cmd_devour_directory() {
+  local logical=$1 selector=$2 source=$3 destination=$4 layer=$5 i existing=0 strategy selector_values=()
+  if cfg_index_for "$logical"; then
+    existing=1
+    strategy=${CFG_STRATEGY[CFG_LOOKUP]:-$DEFAULT_STRATEGY}
+  else
+    strategy=$DEFAULT_STRATEGY
+  fi
+  [[ $strategy != hardlink ]] || die "cannot hardlink directory '$logical'"
+  devour_atomic_check "$logical"
+  devour_atomic_children_check "$logical"
+  devour_validate_directory_tree "$source"
+  [[ ! -e $destination && ! -L $destination ]] || die "repository destination already exists: $destination"
+  devour_repo_parent "$destination"
+  cp -a "$source" "$destination" || die "could not copy directory '$logical' into repository"
+  [[ -d $destination && ! -L $destination ]] || die "directory copy verification failed for '$logical'"
+  (( existing )) || append_atomic_manifest "$logical"
+  # Parse the appended table, but retain the already validated selector values
+  # so selector evaluation cannot introduce a post-copy surprise.
+  selector_values=("${SELECTOR_VALUE[@]}")
+  parse_manifest
+  SELECTOR_VALUE=("${selector_values[@]}")
+  BUILD_SKIP_SELECTORS=1 build_desired
+  devour_entry_for_logical "$logical" || die "imported directory did not enter desired state: $logical"
+  i=$DEVOUR_ENTRY
+  [[ ${ETYPE[i]} == dir ]] || die "imported directory is not an atomic deployment unit: $logical"
+  if ! rm -rf -- "$source"; then
+    restore_devoured_directory "$source" "$destination"
+    die "could not remove original directory '$logical' after import"
+  fi
+  inspect_entry "$i"
+  if [[ $INSPECT != missing ]] || ! apply_one "$i"; then
+    restore_devoured_directory "$source" "$destination"
+    die "could not deploy '$logical' after import"
+  fi
+  inspect_entry "$i"
+  if [[ $INSPECT != correct ]]; then
+    restore_devoured_directory "$source" "$destination"
+    die "deployment verification failed for '$logical'"
+  fi
+  printf '%s\n\n' "${C_BOLD}dots devour${C_RESET}"
+  printf '%s %s %s %s %s\n' "$(mark "$C_ADD" '+')" "$logical" "${C_DIM}→${C_RESET}" "$layer" "${C_DIM}(atomic)${C_RESET}"
+  printf '%s %s %s %s\n' "$(mark "$C_OK" '✓')" "$logical" "${C_DIM}→${C_RESET}" "${ESTRATEGY[i]}"
+}
 cmd_devour() {
   local logical=$1 selector=${2:-} source destination layer=base i
   devour_reject_path "$logical"
@@ -462,8 +531,13 @@ cmd_devour() {
     layer=_${SELECTOR_VALUE[i]}
   fi
   source=$TARGET_HOME/$logical
-  [[ -L $source ]] && die "'$logical' is a symlink\n       devour currently supports regular files only"
+  [[ -L $source ]] && die "'$logical' is a symlink\n       devour does not support symlinks"
   [[ -e $source ]] || die "'$logical' does not exist under HOME"
+  if [[ -d $source ]]; then
+    if [[ $layer == base ]]; then destination=$REPO/$logical; else destination=$REPO/$layer/$logical; fi
+    cmd_devour_directory "$logical" "$selector" "$source" "$destination" "$layer"
+    return
+  fi
   [[ -f $source ]] || die "'$logical' is not a regular file\n       devour currently supports regular files only"
   devour_entry_for_logical "$logical" && die "'$logical' is already managed by dots"
   devour_atomic_check "$logical"

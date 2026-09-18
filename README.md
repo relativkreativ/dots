@@ -122,8 +122,8 @@ templates exist. `apply` skips conflicts unless explicitly forced.
 
 ## Importing an existing file
 
-`dots devour <path>` safely brings one existing, unmanaged regular file from
-`$HOME` into the repository and immediately deploys it with the normal
+`dots devour <path>` safely brings one existing, unmanaged file or directory
+from `$HOME` into the repository and immediately deploys it with the normal
 strategy. The path is always `$HOME`-relative:
 
 ```bash
@@ -139,7 +139,9 @@ dots devour .config/foo/config --overlay host
 ```
 
 `devour` refuses already managed paths, repository destinations that already
-exist, directories and symlinks, and files within atomic managed directories.
+exist, symlinks, and paths within atomic managed directories. A devoured
+directory is added to `dots.toml` as an atomic deployment unit; its contents
+are not managed individually.
 
 > The repository mirrors `$HOME`. Files are symlinked by default.
 > `dots.toml` describes exceptions. Selectors activate sparse overlays for
